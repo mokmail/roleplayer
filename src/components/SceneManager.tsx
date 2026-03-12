@@ -19,13 +19,15 @@ interface SceneManagerProps {
   messages: Message[];
   aiConfig: AIConfig;
   onUpdateContext: (updates: Partial<SceneContext>) => void;
+  notify?: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
-export const SceneManager: React.FC<SceneManagerProps> = ({ 
-  context, 
-  messages, 
+export const SceneManager: React.FC<SceneManagerProps> = ({
+  context,
+  messages,
   aiConfig,
-  onUpdateContext 
+  onUpdateContext,
+  notify,
 }) => {
   const [isUpdating, setIsUpdating] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -45,7 +47,7 @@ export const SceneManager: React.FC<SceneManagerProps> = ({
       setLastUpdate(new Date());
     } catch (error: any) {
       console.error('Error updating scene state:', error);
-      alert(`Sync error: ${error.message}`);
+      notify?.(`Sync error: ${error.message}`, 'error');
     } finally {
       setIsUpdating(false);
     }

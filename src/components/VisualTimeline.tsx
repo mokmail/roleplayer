@@ -54,6 +54,7 @@ export const VisualTimeline: React.FC<VisualTimelineProps> = ({ events }) => {
       <AnimatePresence mode="popLayout">
         {events.map((event, idx) => {
           const isLatest = idx === events.length - 1;
+          const involvedCharacters = Array.isArray(event?.involvedCharacters) ? event.involvedCharacters : [];
           
           return (
             <motion.div 
@@ -118,7 +119,7 @@ export const VisualTimeline: React.FC<VisualTimelineProps> = ({ events }) => {
                     )}
                   </div>
                 <div className="flex -space-x-2">
-                  {event.involvedCharacters.map((char, cIdx) => (
+                  {involvedCharacters.map((char, cIdx) => (
                     <motion.div 
                       key={cIdx} 
                       initial={{ scale: 0 }}
@@ -139,7 +140,7 @@ export const VisualTimeline: React.FC<VisualTimelineProps> = ({ events }) => {
 
               {/* Involved Characters List */}
               <div className="flex flex-wrap gap-2 pt-2 border-t border-white/5">
-                {event.involvedCharacters.map((char, cIdx) => (
+                {involvedCharacters.map((char, cIdx) => (
                   <div key={cIdx} className="flex items-center gap-1.5 px-2 py-1 bg-white/5 rounded-md border border-white/5">
                     <User className="w-2.5 h-2.5 text-zinc-500" />
                     <span className="text-[10px] text-zinc-400 font-medium">{char}</span>

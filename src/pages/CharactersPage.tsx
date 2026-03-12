@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { SceneContext, Character } from '../types';
-import { Users, Sparkles, UserPlus, Trash2, Edit3, Circle, CheckCircle2, Eye, UserCircle2, Target } from 'lucide-react';
+import { Users, Sparkles, UserPlus, Trash2, Edit3, Circle, CheckCircle2, Eye, UserCircle2, Target, UserCheck, UserX } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CharacterDetailModal } from '../components/CharacterDetailModal';
 
@@ -187,6 +187,28 @@ export const CharactersPage: React.FC<CharactersPageProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                      <button 
+                        onClick={(e) => { 
+                          e.stopPropagation(); 
+                          const isPlayingAs = context.playerProfile?.playingAsCharacterId === char.id;
+                          setContext(prev => ({
+                            ...prev,
+                            playerProfile: {
+                              ...prev.playerProfile,
+                              playingAsCharacterId: isPlayingAs ? undefined : char.id,
+                            }
+                          }));
+                        }}
+                        className={cn(
+                          "p-1.5 transition-colors bg-white/5 rounded-md",
+                          context.playerProfile?.playingAsCharacterId === char.id 
+                            ? "text-emerald-400 border border-emerald-500/30" 
+                            : "text-zinc-500 hover:text-emerald-400 hover:bg-emerald-500/10"
+                        )}
+                        title={context.playerProfile?.playingAsCharacterId === char.id ? "Playing as this character" : "Play as this character"}
+                      >
+                        {context.playerProfile?.playingAsCharacterId === char.id ? <UserCheck className="w-3.5 h-3.5" /> : <UserCircle2 className="w-3.5 h-3.5" />}
+                      </button>
                       <button 
                         onClick={(e) => { e.stopPropagation(); onEditCharacter(char); }}
                         className="p-1.5 text-zinc-500 hover:text-emerald-400 transition-colors bg-white/5 rounded-md"

@@ -596,10 +596,12 @@ export interface PlayerProfile {
   role: string;
   persona: string;
   objective: string;
+  playingAsCharacterId?: string;
 }
 
 export interface ContentSafetySettings {
   explicitMode: 'fade-to-black' | 'allow';
+  vulgarityLevel: 'low' | 'medium' | 'high' | 'extreme';
   blurExplicitContent: boolean;
   showExplicitBadges: boolean;
 }
@@ -632,6 +634,13 @@ export interface StoryFlowState {
   recentChanges: StoryFlowChange[];
   lastSignature: string;
   lastUpdated: number;
+  qualityAnalysis?: {
+    narrativePath: string;
+    conversationVelocity: number;
+    stalledTopics: string[];
+    recommendedPrompts: string[];
+    bottleneckCharacters: string[];
+  };
 }
 
 export interface SceneEvent {
@@ -671,10 +680,14 @@ export const NARRATIVE_THEMES: NarrativeTheme[] = [
   'Mythology',
 ];
 
+export type ConversationMode = 'tele' | 'presence';
+
 export interface SceneContext {
   location: string;
+  sceneTime?: string;
   plot: string;
   theme?: string;
+  conversationMode?: ConversationMode;
   characters: Character[];
   relationships?: CharacterRelationship[];
   playerProfile?: PlayerProfile;
@@ -712,4 +725,12 @@ export interface SavedSession {
   context: SceneContext;
   messages: Message[];
   aiConfig?: AIConfig;
+}
+
+export interface SavedStory {
+  id: string;
+  name: string;
+  timestamp: number;
+  prompt: string;
+  context: SceneContext;
 }

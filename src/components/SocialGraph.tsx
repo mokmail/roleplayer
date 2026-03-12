@@ -207,7 +207,8 @@ const CharacterNode = ({ data }: { data: { character: Character; selected: boole
         "relative bg-gradient-to-br from-zinc-800 to-zinc-900 rounded-xl border-2 p-2 min-w-[100px] max-w-[150px] shadow-lg transition-all duration-300",
         data.selected 
           ? "border-emerald-500/50 ring-2 ring-emerald-500/25 scale-105" 
-          : "border-zinc-600/50 hover:border-emerald-500/30 hover:scale-105"
+          : "border-zinc-600/50 hover:border-emerald-500/30 hover:scale-105",
+        !character.isPresent && "opacity-40 grayscale"
       )}
     >
       <Handle type="target" position={Position.Left} className="!bg-emerald-500/50 !w-3 !h-3" />
@@ -508,11 +509,19 @@ const GraphCanvas = ({
   }, []);
 
   const onNodeClick = useCallback((_: any, node: Node) => {
+    // toggle presence when any node is clicked
+    setContext(prev => ({
+      ...prev,
+      characters: prev.characters.map(ch =>
+        ch.id === node.id ? { ...ch, isPresent: !ch.isPresent } : ch
+      )
+    }));
+
     const newSelectedNodeId = selectedNodeId === node.id ? null : node.id;
     setSelectedNodeId(newSelectedNodeId);
     setSelectedRelationshipId(null);
     setEditingId(null);
-  }, [selectedNodeId]);
+  }, [selectedNodeId, setContext]);
 
   const onEdgeClick = useCallback((_: any, edge: Edge) => {
     const relationship = relationships.find((rel) => rel.id === edge.id);

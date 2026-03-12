@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { SceneContext, Message, AIConfig, NARRATIVE_THEMES, NarrativeTheme } from '../types';
+import { SceneContext, Message, AIConfig, NARRATIVE_THEMES, NarrativeTheme, ConversationMode } from '../types';
 import { MapPin, BookOpen, Palette, Zap, Users2, Settings2, ShieldAlert, EyeOff, BadgeAlert, BotMessageSquare, Expand, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { SceneManager } from '../components/SceneManager';
@@ -11,6 +11,8 @@ interface ScenePageProps {
   setContext: React.Dispatch<React.SetStateAction<SceneContext>>;
   messages: Message[];
   aiConfig: AIConfig;
+  onConversationModeChange: (mode: ConversationMode) => void;
+  notify?: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
 export const ScenePage: React.FC<ScenePageProps> = ({
@@ -18,6 +20,8 @@ export const ScenePage: React.FC<ScenePageProps> = ({
   setContext,
   messages,
   aiConfig,
+  onConversationModeChange,
+  notify,
 }) => {
   const isPresetTheme = NARRATIVE_THEMES.includes(context.theme as NarrativeTheme);
   const [isSetupAwarenessOpen, setIsSetupAwarenessOpen] = useState(false);
@@ -40,10 +44,11 @@ export const ScenePage: React.FC<ScenePageProps> = ({
             </div>
           </div>
 
-          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-5">
             {[
               { label: 'Theme', value: context.theme || 'Custom' },
               { label: 'Location', value: context.location || 'Unset' },
+              { label: 'Mode', value: context.conversationMode === 'tele' ? 'Telechat' : 'Presence' },
               { label: 'Turns', value: `${context.maxTurnsPerResponse || 3} max` },
               { label: 'Strategy', value: context.autoTurnOrder || 'sequential' },
             ].map((item) => (
@@ -55,77 +60,173 @@ export const ScenePage: React.FC<ScenePageProps> = ({
           </div>
         </div>
 
-        <section className="rounded-3xl border border-white/5 bg-white/[0.03] p-5 space-y-5">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
-              <BookOpen className="w-4 h-4 text-emerald-400" />
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          {/* Scene Settings */}
+          <section className="rounded-3xl border border-white/5 bg-white/[0.03] p-5 space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
+                <BookOpen className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Scene Settings</h3>
+                <p className="text-xs text-zinc-500 uppercase tracking-widest">Define tone, place, and narrative</p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Scene Foundation</h3>
-              <p className="text-xs text-zinc-500 uppercase tracking-widest">Define tone, place, and dramatic pressure</p>
-            </div>
-          </div>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
-                <Palette className="w-3 h-3" /> Roleplay Theme
-              </label>
-              <select
-                value={isPresetTheme ? context.theme : '__custom'}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === '__custom') {
-                    setContext(prev => ({ ...prev, theme: undefined }));
-                  } else {
-                    setContext(prev => ({ ...prev, theme: val as NarrativeTheme }));
-                  }
-                }}
-                className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-zinc-200 focus:outline-none focus:border-emerald-500/50 transition-colors"
-              >
-                <option value="" disabled className="text-zinc-400">Select a theme...</option>
-                {NARRATIVE_THEMES.map(t => (
-                  <option key={t} value={t} className="bg-[#0f0f0f] text-zinc-200">{t}</option>
-                ))}
-                <option value="__custom" className="bg-[#0f0f0f] text-zinc-200">Other / custom...</option>
-              </select>
-              {(!context.theme || !isPresetTheme) && (
-                <input
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
+                  <Palette className="w-3 h-3" /> Roleplay Theme
+                </label>
+                <select
+                  value={isPresetTheme ? context.theme : '__custom'}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '__custom') {
+                      setContext(prev => ({ ...prev, theme: undefined }));
+                    } else {
+                      setContext(prev => ({ ...prev, theme: val as NarrativeTheme }));
+                    }
+                  }}
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-zinc-200 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                >
+                  <option value="" disabled className="text-zinc-400">Select a theme...</option>
+                  {NARRATIVE_THEMES.map(t => (
+                    <option key={t} value={t} className="bg-[#0f0f0f] text-zinc-200">{t}</option>
+                  ))}
+                  <option value="__custom" className="bg-[#0f0f0f] text-zinc-200">Other / custom...</option>
+                </select>
+                {(!context.theme || !isPresetTheme) && (
+                  <input
+                    type="text"
+                    value={context.theme || ''}
+                    onChange={(e) => setContext(prev => ({ ...prev, theme: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                    placeholder="Enter custom theme"
+                  />
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
+                  <MapPin className="w-3 h-3" /> Location
+                </label>
+                <input 
                   type="text"
-                  value={context.theme || ''}
-                  onChange={(e) => setContext(prev => ({ ...prev, theme: e.target.value }))}
+                  value={context.location}
+                  onChange={(e) => setContext(prev => ({ ...prev, location: e.target.value }))}
                   className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                  placeholder="Enter custom theme"
+                  placeholder="Where does the scene take place?"
                 />
-              )}
-            </div>
+              </div>
 
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
-                <MapPin className="w-3 h-3" /> Location
-              </label>
-              <input 
-                type="text"
-                value={context.location}
-                onChange={(e) => setContext(prev => ({ ...prev, location: e.target.value }))}
-                className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                placeholder="Where does the scene take place?"
-              />
-            </div>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
+                  <Users2 className="w-3 h-3" /> Conversation Mode
+                </label>
+                <div className="flex gap-2">
+                  {['presence', 'tele'].map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => onConversationModeChange(mode as ConversationMode)}
+                      className={cn(
+                        "flex-1 p-3 rounded-xl border text-xs font-medium transition-all",
+                        context.conversationMode === mode
+                          ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                          : "bg-black/20 border-white/5 text-zinc-500 hover:border-white/10"
+                      )}
+                    >
+                      {mode === 'tele' ? 'Telechat' : 'Presence'}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-            <div className="space-y-2 lg:col-span-2">
-              <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
-                <BookOpen className="w-3 h-3" /> Plot / Theme
-              </label>
-              <textarea 
-                value={context.plot}
-                onChange={(e) => setContext(prev => ({ ...prev, plot: e.target.value }))}
-                className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500/50 transition-colors h-28 resize-none"
-                placeholder="What is happening right now?"
-              />
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
+                  <BookOpen className="w-3 h-3" /> Plot Summary
+                </label>
+                <textarea 
+                  value={context.plot}
+                  onChange={(e) => setContext(prev => ({ ...prev, plot: e.target.value }))}
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500/50 transition-colors h-24 resize-none"
+                  placeholder="What is happening right now?"
+                />
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+
+          {/* AI Behavior */}
+          <section className="rounded-3xl border border-white/5 bg-white/[0.03] p-5 space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-2xl bg-violet-500/10 border border-violet-500/20">
+                <Zap className="w-4 h-4 text-violet-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">AI Behavior</h3>
+                <p className="text-xs text-zinc-500 uppercase tracking-widest">Control responses and turn order</p>
+              </div>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl space-y-3">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                  <Users2 className="w-3.5 h-3.5" /> Max Turns per Response
+                </label>
+                <div className="flex items-center gap-4">
+                  <input 
+                    type="range" 
+                    min="1" 
+                    max="6" 
+                    step="1"
+                    value={context.maxTurnsPerResponse || 3}
+                    onChange={(e) => setContext(prev => ({ ...prev, maxTurnsPerResponse: parseInt(e.target.value) }))}
+                    className="flex-1 accent-violet-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+                  />
+                  <span className="text-lg font-black text-violet-400 tabular-nums min-w-[1ch]">
+                    {context.maxTurnsPerResponse || 3}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-600 leading-relaxed italic">
+                  How many characters react in a single reply.
+                </p>
+              </div>
+
+              <div className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl space-y-3">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                  <Zap className="w-3.5 h-3.5" /> Response Strategy
+                </label>
+                
+                <div className="flex flex-col gap-2">
+                  {[
+                    { id: 'sequential', label: 'Sequential', desc: 'Natural flow based on relevance' },
+                    { id: 'random', label: 'Chaotic', desc: 'Random characters react unexpectedly' },
+                    { id: 'manual', label: 'Reactive', desc: 'Only react when directly addressed' }
+                  ].map((strat) => (
+                    <button
+                      key={strat.id}
+                      onClick={() => setContext(prev => ({ ...prev, autoTurnOrder: strat.id as any }))}
+                      className={cn(
+                        "flex items-center justify-between p-3 rounded-xl border transition-all text-left",
+                        (context.autoTurnOrder || 'sequential') === strat.id 
+                          ? "bg-violet-500/10 border-violet-500/30 text-violet-400" 
+                          : "bg-black/20 border-white/5 text-zinc-500 hover:border-white/10"
+                      )}
+                    >
+                      <div>
+                        <div className="text-xs font-bold uppercase tracking-tight">{strat.label}</div>
+                        <div className="text-[10px] opacity-60 font-medium">{strat.desc}</div>
+                      </div>
+                      {(context.autoTurnOrder || 'sequential') === strat.id && (
+                        <div className="w-2 h-2 rounded-full bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,0.5)]" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
 
         {context.storyFlow && (
           <section className="rounded-3xl border border-emerald-500/10 bg-white/[0.03] p-5 space-y-4">
@@ -179,7 +280,39 @@ export const ScenePage: React.FC<ScenePageProps> = ({
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
             <div className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl space-y-4">
-              <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Explicitness Handling</label>
+              <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Vulgarity Level</label>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { id: 'low', label: 'Low', color: 'bg-blue-500/10 border-blue-500/30 text-blue-400', active: 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]' },
+                  { id: 'medium', label: 'Medium', color: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400', active: 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' },
+                  { id: 'high', label: 'High', color: 'bg-orange-500/10 border-orange-500/30 text-orange-400', active: 'bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]' },
+                  { id: 'extreme', label: 'Extreme', color: 'bg-red-500/10 border-red-500/30 text-red-400', active: 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' }
+                ].map((level) => (
+                  <button
+                    key={level.id}
+                    onClick={() => setContext(prev => ({
+                      ...prev,
+                      contentSafety: {
+                        ...prev.contentSafety!,
+                        vulgarityLevel: level.id as any
+                      }
+                    }))}
+                    className={cn(
+                      "flex-1 flex flex-col items-center justify-center p-3 rounded-xl border transition-all text-center min-w-[70px]",
+                      (context.contentSafety?.vulgarityLevel || 'medium') === level.id
+                        ? level.color
+                        : "bg-black/20 border-white/5 text-zinc-500 hover:border-white/10"
+                    )}
+                  >
+                    <div className="text-[10px] font-bold uppercase tracking-tight mb-1">{level.label}</div>
+                    {(context.contentSafety?.vulgarityLevel || 'medium') === level.id && (
+                      <div className={cn("w-1.5 h-1.5 rounded-full", level.active)} />
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest pt-2 block border-t border-white/5">Explicitness Handling</label>
               <div className="flex flex-col gap-2">
                 {[
                   { id: 'fade-to-black', label: 'Fade to Black', desc: 'Imply intimacy without graphic sexual detail' },
@@ -191,6 +324,7 @@ export const ScenePage: React.FC<ScenePageProps> = ({
                       ...prev,
                       contentSafety: {
                         explicitMode: mode.id as 'fade-to-black' | 'allow',
+                        vulgarityLevel: prev.contentSafety?.vulgarityLevel ?? 'medium',
                         blurExplicitContent: prev.contentSafety?.blurExplicitContent ?? true,
                         showExplicitBadges: prev.contentSafety?.showExplicitBadges ?? true,
                       }
@@ -220,6 +354,7 @@ export const ScenePage: React.FC<ScenePageProps> = ({
                   ...prev,
                   contentSafety: {
                     explicitMode: prev.contentSafety?.explicitMode || 'fade-to-black',
+                    vulgarityLevel: prev.contentSafety?.vulgarityLevel ?? 'medium',
                     blurExplicitContent: !(prev.contentSafety?.blurExplicitContent ?? true),
                     showExplicitBadges: prev.contentSafety?.showExplicitBadges ?? true,
                   }
@@ -242,6 +377,7 @@ export const ScenePage: React.FC<ScenePageProps> = ({
                   ...prev,
                   contentSafety: {
                     explicitMode: prev.contentSafety?.explicitMode || 'fade-to-black',
+                    vulgarityLevel: prev.contentSafety?.vulgarityLevel ?? 'medium',
                     blurExplicitContent: prev.contentSafety?.blurExplicitContent ?? true,
                     showExplicitBadges: !(prev.contentSafety?.showExplicitBadges ?? true),
                   }
@@ -263,91 +399,33 @@ export const ScenePage: React.FC<ScenePageProps> = ({
 
         </section>
 
+        {/* Cast & Scenes */}
         <section className="rounded-3xl border border-white/5 bg-white/[0.03] p-5 space-y-5">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
-              <Settings2 className="w-4 h-4 text-emerald-400" />
+            <div className="p-2 rounded-2xl bg-amber-500/10 border border-amber-500/20">
+              <Users2 className="w-4 h-4 text-amber-400" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Turn Management</h3>
-              <p className="text-xs text-zinc-500 uppercase tracking-widest">Control how many characters speak and how they are chosen</p>
+              <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Cast & Scenes</h3>
+              <p className="text-xs text-zinc-500 uppercase tracking-widest">Manage characters and scene flow</p>
             </div>
           </div>
-          
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <div className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl space-y-3">
-              <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
-                <Users2 className="w-3.5 h-3.5" /> Max Turns per Response
-              </label>
-              <div className="flex items-center gap-4">
-                <input 
-                  type="range" 
-                  min="1" 
-                  max="6" 
-                  step="1"
-                  value={context.maxTurnsPerResponse || 3}
-                  onChange={(e) => setContext(prev => ({ ...prev, maxTurnsPerResponse: parseInt(e.target.value) }))}
-                  className="flex-1 accent-emerald-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
-                />
-                <span className="text-lg font-black text-emerald-400 tabular-nums min-w-[1ch]">
-                  {context.maxTurnsPerResponse || 3}
-                </span>
-              </div>
-              <p className="text-[10px] text-zinc-600 leading-relaxed italic">
-                Controls how many characters are allowed to react in a single reply.
-              </p>
-            </div>
 
-            <div className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl space-y-4">
-              <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
-                <Zap className="w-3.5 h-3.5" /> Response Strategy
-              </label>
-              
-              <div className="flex flex-col gap-2">
-                {[
-                  { id: 'sequential', label: 'Sequential', desc: 'Natural flow based on relevance' },
-                  { id: 'random', label: 'Chaotic', desc: 'Random characters react unexpectedly' },
-                  { id: 'manual', label: 'Reactive', desc: 'Only react when directly addressed' }
-                ].map((strat) => (
-                  <button
-                    key={strat.id}
-                    onClick={() => setContext(prev => ({ ...prev, autoTurnOrder: strat.id as any }))}
-                    className={cn(
-                      "flex items-center justify-between p-3 rounded-xl border transition-all text-left",
-                      (context.autoTurnOrder || 'sequential') === strat.id 
-                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" 
-                        : "bg-black/20 border-white/5 text-zinc-500 hover:border-white/10"
-                    )}
-                  >
-                    <div>
-                      <div className="text-xs font-bold uppercase tracking-tight">{strat.label}</div>
-                      <div className="text-[10px] opacity-60 font-medium">{strat.desc}</div>
-                    </div>
-                    {(context.autoTurnOrder || 'sequential') === strat.id && (
-                      <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <div className="grid grid-cols-1 gap-6">
           <SocialGraph
             context={context}
             setContext={setContext}
           />
 
-          <div className="rounded-3xl border border-white/5 bg-white/[0.03] p-5">
-            <SceneManager 
-              context={context} 
-              messages={messages} 
+          <div className="pt-2">
+            <SceneManager
+              context={context}
+              messages={messages}
               aiConfig={aiConfig}
-              onUpdateContext={(updates) => setContext(prev => ({ ...prev, ...updates }))} 
+              onUpdateContext={(updates) => setContext(prev => ({ ...prev, ...updates }))}
+              notify={notify}
             />
           </div>
-        </div>
+        </section>
 
         <AnimatePresence>
           {isSetupAwarenessOpen && context.storyFlow && (
@@ -420,6 +498,84 @@ export const ScenePage: React.FC<ScenePageProps> = ({
                         )}
                       </div>
                     </div>
+
+                    {context.storyFlow.qualityAnalysis && (
+                      <div className="rounded-3xl border border-violet-500/20 bg-violet-500/5 p-6 space-y-6">
+                        <div className="flex items-center gap-3 border-b border-violet-500/10 pb-4">
+                          <Zap className="w-5 h-5 text-violet-400" />
+                          <h4 className="text-sm font-bold text-violet-300 uppercase tracking-widest">Quality Agent Analysis</h4>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                          <div className="space-y-4">
+                            <div>
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-violet-400/70 mb-2">Narrative Path</p>
+                              <p className="text-sm text-zinc-200 leading-relaxed font-medium capitalize-first">
+                                {context.storyFlow.qualityAnalysis.narrativePath}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-4">
+                              <div className="flex-1">
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-violet-400/70 mb-2">Conversation Velocity</p>
+                                <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden border border-white/5">
+                                  <div 
+                                    className="h-full bg-violet-500 shadow-[0_0_10px_rgba(139,92,246,0.5)] transition-all duration-1000" 
+                                    style={{ width: `${context.storyFlow.qualityAnalysis.conversationVelocity * 10}%` }}
+                                  />
+                                </div>
+                              </div>
+                              <span className="text-xl font-black text-violet-400 tabular-nums">
+                                {context.storyFlow.qualityAnalysis.conversationVelocity}/10
+                              </span>
+                            </div>
+
+                            <div>
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-violet-400/70 mb-2">Stalled Topics</p>
+                              <div className="flex flex-wrap gap-2">
+                                {context.storyFlow.qualityAnalysis.stalledTopics.length > 0 ? (
+                                  context.storyFlow.qualityAnalysis.stalledTopics.map((topic, i) => (
+                                    <span key={i} className="px-2 py-1 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider">
+                                      {topic}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-xs text-zinc-500 italic">No stagnant topics detected.</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-4">
+                            <div>
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-400/70 mb-2">Quality Nudges</p>
+                              <ul className="space-y-2">
+                                {context.storyFlow.qualityAnalysis.recommendedPrompts.map((prompt, i) => (
+                                  <li key={i} className="text-xs text-zinc-300 bg-white/5 border border-white/5 rounded-xl p-3 leading-relaxed hover:border-emerald-500/30 transition-colors">
+                                    {prompt}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+
+                            <div>
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-orange-400/70 mb-2">Bottleneck Characters</p>
+                              <div className="flex flex-wrap gap-2">
+                                {context.storyFlow.qualityAnalysis.bottleneckCharacters.length > 0 ? (
+                                  context.storyFlow.qualityAnalysis.bottleneckCharacters.map((char, i) => (
+                                    <span key={i} className="px-2 py-1 rounded-lg bg-orange-500/10 border border-orange-500/20 text-orange-300 text-[10px] font-bold uppercase tracking-wider">
+                                      {char}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-xs text-zinc-500 italic">Screen time is well balanced.</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>

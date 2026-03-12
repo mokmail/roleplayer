@@ -7,6 +7,16 @@ function cleanText(value?: string) {
   return value?.trim().replace(/\s+/g, ' ') || '';
 }
 
+function normalizeConversationMode(mode?: string): 'tele' | 'presence' {
+  const normalized = cleanText(mode).toLowerCase().replace(/[^a-z]/g, '');
+
+  if (normalized === 'tele' || normalized === 'telechat' || normalized === 'remote' || normalized === 'messaging' || normalized === 'chat') {
+    return 'tele';
+  }
+
+  return 'presence';
+}
+
 function characterSnapshot(character: Character) {
   return {
     id: character.id,
@@ -33,6 +43,7 @@ function createComparableSnapshot(context: SceneContext) {
     theme: cleanText(context.theme),
     location: cleanText(context.location),
     plot: cleanText(context.plot),
+    conversationMode: normalizeConversationMode(context.conversationMode),
     playerProfile: {
       name: cleanText(context.playerProfile?.name),
       role: cleanText(context.playerProfile?.role),
@@ -81,6 +92,7 @@ function describeCharacter(character: Character) {
 }
 
 export function buildSetupDigest(context: SceneContext) {
+  const mode = normalizeConversationMode(context.conversationMode);
   const activeCharacters = context.characters.filter((character) => character.isPresent).map(describeCharacter);
   const inactiveCharacters = context.characters.filter((character) => !character.isPresent).map(describeCharacter);
   const relationshipSummary = (context.relationships || []).map((relationship) => {
@@ -108,6 +120,7 @@ export function buildSetupDigest(context: SceneContext) {
   return [
     `Theme: ${cleanText(context.theme) || 'Unspecified'}`,
     `Location: ${cleanText(context.location) || 'Unspecified'}`,
+    `Mode: ${mode === 'tele' ? 'telechat' : 'presence'}`,
     `Plot frame: ${cleanText(context.plot) || 'No active plot defined.'}`,
     `Player anchor: ${playerBits.length > 0 ? playerBits.join('; ') : 'No player profile defined.'}`,
     `Turn engine: up to ${context.maxTurnsPerResponse || 3} character turns, ${(context.autoTurnOrder || 'sequential')} order.`,
@@ -253,9 +266,14 @@ function diffContextChanges(previousContext: SceneContext, nextContext: SceneCon
 }
 
 export function syncSceneContextTracking(nextContext: SceneContext, previousContext?: SceneContext) {
-  const existingFlow = nextContext.storyFlow;
+  const normalizedNextContext: SceneContext = {
+    ...nextContext,
+    conversationMode: normalizeConversationMode(nextContext.conversationMode),
+  };
+
+  const existingFlow = normalizedNextContext.storyFlow;
   const previousFlow = existingFlow || previousContext?.storyFlow;
-  const changes = previousContext ? diffContextChanges(previousContext, nextContext) : [];
+  const changes = previousContext ? diffContextChanges(previousContext, normalizedNextContext) : [];
   const recentChanges = changes.length > 0
     ? mergeChangeList(changes, existingFlow?.recentChanges || previousFlow?.recentChanges || [], MAX_RECENT_CHANGES)
     : (existingFlow?.recentChanges || previousFlow?.recentChanges || []).slice(0, MAX_RECENT_CHANGES);
@@ -264,16 +282,16 @@ export function syncSceneContextTracking(nextContext: SceneContext, previousCont
     : (existingFlow?.pendingChanges || previousFlow?.pendingChanges || []).slice(0, MAX_PENDING_CHANGES);
 
   const storyFlow: StoryFlowState = {
-    setupDigest: buildSetupDigest(nextContext),
-    activeGuidance: buildActiveGuidance(nextContext),
+    setupDigest: buildSetupDigest(normalizedNextContext),
+    activeGuidance: buildActiveGuidance(normalizedNextContext),
     pendingChanges,
     recentChanges,
-    lastSignature: createSceneSetupSignature(nextContext),
+    lastSignature: createSceneSetupSignature(normalizedNextContext),
     lastUpdated: changes.length > 0 ? Date.now() : existingFlow?.lastUpdated || previousFlow?.lastUpdated || Date.now(),
   };
 
   return {
-    ...nextContext,
+    ...normalizedNextContext,
     storyFlow,
   };
 }
