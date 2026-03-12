@@ -1,7 +1,49 @@
 import { Character, SceneContext, StoryFlowChange, StoryFlowState } from '../types';
+import { buildMemoryDigest, createEmptyMemory } from './memory';
 
 const MAX_RECENT_CHANGES = 12;
 const MAX_PENDING_CHANGES = 6;
+
+export interface StorySetupValidation {
+  isComplete: boolean;
+  missingComponents: string[];
+  warnings: string[];
+}
+
+export function validateStorySetup(context: SceneContext): StorySetupValidation {
+  const missingComponents: string[] = [];
+  const warnings: string[] = [];
+
+  const hasPersona = cleanText(context.playerProfile?.persona);
+  if (!hasPersona) {
+    missingComponents.push('persona');
+    warnings.push('No player persona defined - the AI won\'t know how to address or characterize you');
+  }
+
+  if (!cleanText(context.location)) {
+    missingComponents.push('location');
+    warnings.push('No location set - scenes need a place to happen');
+  }
+
+  if (!cleanText(context.theme)) {
+    missingComponents.push('theme');
+    warnings.push('No theme specified - the AI won\'t know the tone or genre');
+  }
+
+  if (!cleanText(context.sceneTime)) {
+    missingComponents.push('time');
+    warnings.push('No time of day/date set - scenes benefit from temporal context');
+  }
+
+  if (!context.conversationMode) {
+    missingComponents.push('mode');
+    warnings.push('No conversation mode set - specify tele (telechat) or presence (in-person)');
+  }
+
+  const isComplete = missingComponents.length === 0;
+
+  return { isComplete, missingComponents, warnings };
+}
 
 function cleanText(value?: string) {
   return value?.trim().replace(/\s+/g, ' ') || '';
@@ -269,6 +311,7 @@ export function syncSceneContextTracking(nextContext: SceneContext, previousCont
   const normalizedNextContext: SceneContext = {
     ...nextContext,
     conversationMode: normalizeConversationMode(nextContext.conversationMode),
+    storyMemory: nextContext.storyMemory || createEmptyMemory(),
   };
 
   const existingFlow = normalizedNextContext.storyFlow;
@@ -281,6 +324,9 @@ export function syncSceneContextTracking(nextContext: SceneContext, previousCont
     ? mergeChangeList(changes, existingFlow?.pendingChanges || previousFlow?.pendingChanges || [], MAX_PENDING_CHANGES)
     : (existingFlow?.pendingChanges || previousFlow?.pendingChanges || []).slice(0, MAX_PENDING_CHANGES);
 
+  const storyMemory = normalizedNextContext.storyMemory || createEmptyMemory();
+  const storyMemoryDigest = buildMemoryDigest(storyMemory, normalizedNextContext.characters);
+
   const storyFlow: StoryFlowState = {
     setupDigest: buildSetupDigest(normalizedNextContext),
     activeGuidance: buildActiveGuidance(normalizedNextContext),
@@ -288,6 +334,7 @@ export function syncSceneContextTracking(nextContext: SceneContext, previousCont
     recentChanges,
     lastSignature: createSceneSetupSignature(normalizedNextContext),
     lastUpdated: changes.length > 0 ? Date.now() : existingFlow?.lastUpdated || previousFlow?.lastUpdated || Date.now(),
+    storyMemoryDigest,
   };
 
   return {

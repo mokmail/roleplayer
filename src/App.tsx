@@ -51,12 +51,13 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import { Character, CharacterRelationship, ContentSafetySettings, PlayerProfile, SceneContext, Message, SavedSession, SavedStory, AIConfig, AIProvider, ConversationMode } from './types';
+import { syncSceneContextTracking, acknowledgeSceneContextChanges } from './lib/contextTracker';
+import { addMemoryEntry } from './lib/memory';
 import { generateRoleplayResponse, generateStorySetup, updateSceneState, generateContextUpdate, generateLocationSuggestions, generateSceneTransitionPlan } from './services/geminiService';
 import { CharacterWizard } from './components/CharacterWizard';
 import { cn } from './lib/utils';
 import { useNotification } from './lib/notification';
 import { sanitizeExplicitMarker, shouldBlurMessage, shouldShowExplicitBadge } from './lib/contentSafety';
-import { acknowledgeSceneContextChanges, syncSceneContextTracking } from './lib/contextTracker';
 import { STARTER_SCENARIOS } from './lib/starterScenarios';
 // page components
 import { ScenePage } from './pages/ScenePage';
@@ -412,26 +413,58 @@ user is playing role of john and is trying to find a way to have a relationship 
   }, [context.characters, messages.length]);
 
   const splitCharacterTurns = (text: string) => {
-    const turns: { name: string; content: string }[] = [];
+    const turns: { name: string; content: string; actionText: string }[] = [];
     const regex = /\*\*([^*]+):\*\*/g;
     let match;
     let lastIndex = 0;
 
     while ((match = regex.exec(text)) !== null) {
       if (turns.length > 0) {
-        turns[turns.length - 1].content = text.substring(lastIndex, match.index).trim();
+        const turnContent = text.substring(lastIndex, match.index).trim();
+        const { dialogue, action } = extractActionFromContent(turnContent);
+        turns[turns.length - 1].content = dialogue;
+        turns[turns.length - 1].actionText = action;
       }
-      turns.push({ name: match[1], content: '' });
+      turns.push({ name: match[1], content: '', actionText: '' });
       lastIndex = regex.lastIndex;
     }
 
     if (turns.length > 0) {
-      turns[turns.length - 1].content = text.substring(lastIndex).trim();
+      const turnContent = text.substring(lastIndex).trim();
+      const { dialogue, action } = extractActionFromContent(turnContent);
+      turns[turns.length - 1].content = dialogue;
+      turns[turns.length - 1].actionText = action;
     } else {
-      return [{ name: '', content: text.trim() }];
+      const { dialogue, action } = extractActionFromContent(text.trim());
+      return [{ name: '', content: dialogue, actionText: action }];
     }
 
     return turns;
+  };
+
+  const extractActionFromContent = (text: string): { dialogue: string; action: string } => {
+    const actionRegex = /\*([^*]+)\*/g;
+    const actions: string[] = [];
+    let match;
+    let lastIndex = 0;
+    const parts: string[] = [];
+    
+    while ((match = actionRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(text.substring(lastIndex, match.index));
+      }
+      actions.push(match[1]);
+      lastIndex = actionRegex.lastIndex;
+    }
+    
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex));
+    }
+    
+    const dialogue = parts.join('').trim();
+    const action = actions.join(' ').trim();
+    
+    return { dialogue, action };
   };
 
   const buildAssistantMessages = (aiResponse: string) => {
@@ -442,9 +475,10 @@ user is playing role of john and is trying to find a way to have a relationship 
       .map((turn) => ({
         name: turn.name.trim(),
         content: turn.content.trim(),
+        actionText: turn.actionText.trim(),
       }))
       .filter((turn) => {
-        if (!turn.content) return false;
+        if (!turn.content && !turn.actionText) return false;
 
         const normalizedName = turn.name.toLowerCase();
         const looksLikeSystemMeta =
@@ -457,6 +491,7 @@ user is playing role of john and is trying to find a way to have a relationship 
         id: (timestamp + index + 1).toString(),
         role: 'assistant' as const,
         content: turn.content,
+        actionText: turn.actionText || undefined,
         characterName: turn.name || undefined,
         timestamp,
       }));
@@ -2208,26 +2243,42 @@ user is playing role of john and is trying to find a way to have a relationship 
                             </span>
                           )}
                         </div>
-                        <div className={cn(
-                          "max-w-[85%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-lg relative overflow-hidden",
-                          isPersonaUser 
-                            ? `${getCharacterColor(msg.characterName)} text-white rounded-tr-none shadow-emerald-900/10` 
-                            : "bg-zinc-800 border border-white/10 text-zinc-200 rounded-tl-none"
-                        )}>
-                          <div className={cn(
-                            "markdown-body prose prose-invert prose-sm max-w-none transition-all",
-                            shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && "blur-md select-none"
-                          )}>
-                            <Markdown>{sanitizeExplicitMarker(msg.content)}</Markdown>
+                        <div className="flex items-start gap-4 max-w-[95%]">
+                          <div className="flex-1">
+                            {msg.content && (
+                              <div className={cn(
+                                "px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-lg relative overflow-hidden",
+                                isPersonaUser 
+                                  ? `${getCharacterColor(msg.characterName)} text-white rounded-tr-none shadow-emerald-900/10` 
+                                  : "bg-zinc-800 border border-white/10 text-zinc-200 rounded-tl-none"
+                              )}>
+                                <div className={cn(
+                                  "markdown-body prose prose-invert prose-sm max-w-none transition-all",
+                                  shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && "blur-md select-none"
+                                )}>
+                                  <Markdown>{sanitizeExplicitMarker(msg.content)}</Markdown>
+                                </div>
+                                {shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && (
+                                  <div className="absolute inset-0 flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
+                                    <button
+                                      onClick={() => setRevealedExplicitMessages(prev => ({ ...prev, [msg.id]: true }))}
+                                      className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/60 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-amber-300 transition-all hover:bg-black/80"
+                                    >
+                                      <Eye className="w-3 h-3" /> Reveal explicit content
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
-                          {shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
-                              <button
-                                onClick={() => setRevealedExplicitMessages(prev => ({ ...prev, [msg.id]: true }))}
-                                className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/60 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-amber-300 transition-all hover:bg-black/80"
-                              >
-                                <Eye className="w-3 h-3" /> Reveal explicit content
-                              </button>
+                          {msg.actionText && (
+                            <div className={cn(
+                              "flex-1 max-w-[45%] px-4 py-3 rounded-2xl text-sm leading-relaxed border italic",
+                              isPersonaUser 
+                                ? "bg-emerald-900/20 border-emerald-500/30 text-emerald-200 rounded-tl-none"
+                                : "bg-amber-900/10 border-amber-500/20 text-amber-200/80 rounded-tr-none"
+                            )}>
+                              <Markdown>{msg.actionText}</Markdown>
                             </div>
                           )}
                         </div>
@@ -2451,7 +2502,6 @@ user is playing role of john and is trying to find a way to have a relationship 
             {[
               { id: 'scene', icon: Layout, label: 'Scene' },
               { id: 'characters', icon: Users, label: 'Chars' },
-              { id: 'sessions', icon: History, label: 'Logs' },
               { id: 'stories', icon: Library, label: 'Stories' },
               { id: 'agents', icon: Bot, label: 'Agents' }
             ].map((tab) => (
@@ -2493,17 +2543,7 @@ user is playing role of john and is trying to find a way to have a relationship 
                 onEditCharacter={handleEditCharacter}
               />
             )}
-            {activeRightTab === 'sessions' && (
-              <SessionsPage
-                savedSessions={savedSessions}
-                saveCurrentSession={saveCurrentSession}
-                createNewSession={createNewSession}
-                exportSessions={exportSessions} 
-                importSessions={importSessions} 
-                deleteSession={deleteSession}
-                loadSession={loadSession}
-              />
-            )}
+
             {activeRightTab === 'stories' && (
               <StoriesPage
                 savedStories={savedStories}
@@ -2525,6 +2565,7 @@ user is playing role of john and is trying to find a way to have a relationship 
                 context={context}
                 messages={messages}
                 aiConfig={aiConfig}
+                scenes={scenes}
                 notify={notify}
                 onApplyLocation={async (location, rationale, transitionHook, fitsMode) => {
                   const newContext = { ...context, location, plot: rationale || context.plot };
@@ -2563,6 +2604,13 @@ user is playing role of john and is trying to find a way to have a relationship 
                   } catch (e) {
                     console.error('Failed to trigger scene update event:', e);
                   }
+                }}
+                onApplyMemory={(entry) => {
+                  const currentMemory = context.storyMemory || { entries: [] };
+                  const updatedMemory = addMemoryEntry(currentMemory, entry);
+                  const newContext = { ...context, storyMemory: updatedMemory };
+                  setContext(newContext);
+                  notify?.(`Memory recorded: ${entry.type.replace('_', ' ')}`, 'info');
                 }}
               />
             )}

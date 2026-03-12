@@ -1,10 +1,34 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { SceneContext, Message, AIConfig, NARRATIVE_THEMES, NarrativeTheme, ConversationMode } from '../types';
-import { MapPin, BookOpen, Palette, Zap, Users2, Settings2, ShieldAlert, EyeOff, BadgeAlert, BotMessageSquare, Expand, X } from 'lucide-react';
+import { MapPin, BookOpen, Palette, Zap, Users2, Settings2, ShieldAlert, EyeOff, BadgeAlert, BotMessageSquare, Expand, X, AlertTriangle, Clock, Edit3 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { SceneManager } from '../components/SceneManager';
 import { SocialGraph } from '../components/SocialGraph';
 import { cn } from '../lib/utils';
+import { validateStorySetup, StorySetupValidation } from '../lib/contextTracker';
+
+const RESPONSE_STRATEGIES = [
+  { id: 'sequential', label: 'Sequential', desc: 'Natural flow based on relevance' },
+  { id: 'random', label: 'Chaotic', desc: 'Random characters react unexpectedly' },
+  { id: 'manual', label: 'Reactive', desc: 'Only react when directly addressed' }
+] as const;
+
+const STRATEGY_LABELS: Record<string, string> = {
+  sequential: 'Sequential',
+  random: 'Chaotic',
+  manual: 'Reactive'
+};
+
+const TIME_OPTIONS = [
+  { group: 'Time of Day', options: ['Dawn', 'Morning', 'Midday', 'Afternoon', 'Evening', 'Dusk', 'Night', 'Midnight'] },
+  { group: 'Weather/Mood', options: ['A rainy day', 'A stormy night', 'A snowy evening', 'A foggy morning', 'A hot summer day', 'A cold winter night', 'A full moon night', 'A lunar eclipse'] },
+  { group: 'Era/Period', options: ['Pre-dawn', 'Golden hour', 'Twilight', 'The witching hour', 'The dead of night'] }
+];
+
+const CONVERSATION_MODES = [
+  { id: 'presence', label: 'Presence' },
+  { id: 'tele', label: 'Telechat' }
+] as const;
 
 interface ScenePageProps {
   context: SceneContext;
@@ -26,6 +50,8 @@ export const ScenePage: React.FC<ScenePageProps> = ({
   const isPresetTheme = NARRATIVE_THEMES.includes(context.theme as NarrativeTheme);
   const [isSetupAwarenessOpen, setIsSetupAwarenessOpen] = useState(false);
 
+  const setupValidation: StorySetupValidation = useMemo(() => validateStorySetup(context), [context]);
+
   return (
     <div className="h-full overflow-y-auto custom-scrollbar bg-transparent">
       <div className="px-6 py-5 space-y-6">
@@ -44,13 +70,14 @@ export const ScenePage: React.FC<ScenePageProps> = ({
             </div>
           </div>
 
-          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-5">
+          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-6">
             {[
-              { label: 'Theme', value: context.theme || 'Custom' },
-              { label: 'Location', value: context.location || 'Unset' },
-              { label: 'Mode', value: context.conversationMode === 'tele' ? 'Telechat' : 'Presence' },
+              { label: 'Theme', value: context.theme || 'Not set' },
+              { label: 'Location', value: context.location || 'Not set' },
+              { label: 'Time', value: context.sceneTime || 'Not set' },
+              { label: 'Mode', value: context.conversationMode === 'tele' ? 'Telechat' : (context.conversationMode === 'presence' ? 'Presence' : 'Not set') },
               { label: 'Turns', value: `${context.maxTurnsPerResponse || 3} max` },
-              { label: 'Strategy', value: context.autoTurnOrder || 'sequential' },
+              { label: 'Strategy', value: STRATEGY_LABELS[context.autoTurnOrder || 'sequential'] || 'Sequential' },
             ].map((item) => (
               <div key={item.label} className="rounded-2xl border border-white/5 bg-black/20 px-4 py-3">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{item.label}</p>
@@ -59,6 +86,27 @@ export const ScenePage: React.FC<ScenePageProps> = ({
             ))}
           </div>
         </div>
+
+        {!setupValidation.isComplete && (
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-amber-200">
+                  Story setup incomplete — missing: {setupValidation.missingComponents.join(', ')}
+                </p>
+                <ul className="space-y-1">
+                  {setupValidation.warnings.map((warning, i) => (
+                    <li key={i} className="text-xs text-amber-200/70 flex items-start gap-2">
+                      <span className="text-amber-400">•</span>
+                      {warning}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           {/* Scene Settings */}
@@ -122,21 +170,41 @@ export const ScenePage: React.FC<ScenePageProps> = ({
 
               <div className="space-y-2">
                 <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
+                  <Clock className="w-3 h-3" /> Time
+                </label>
+                <select
+                  value={context.sceneTime || ''}
+                  onChange={(e) => setContext(prev => ({ ...prev, sceneTime: e.target.value }))}
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-zinc-200 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                >
+                  <option value="" className="text-zinc-400">Select time...</option>
+                  {TIME_OPTIONS.map((group) => (
+                    <optgroup key={group.group} label={group.group}>
+                      {group.options.map((time) => (
+                        <option key={time} value={time} className="bg-[#0f0f0f] text-zinc-200">{time}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
                   <Users2 className="w-3 h-3" /> Conversation Mode
                 </label>
                 <div className="flex gap-2">
-                  {['presence', 'tele'].map((mode) => (
+                  {CONVERSATION_MODES.map((mode) => (
                     <button
-                      key={mode}
-                      onClick={() => onConversationModeChange(mode as ConversationMode)}
+                      key={mode.id}
+                      onClick={() => onConversationModeChange(mode.id)}
                       className={cn(
                         "flex-1 p-3 rounded-xl border text-xs font-medium transition-all",
-                        context.conversationMode === mode
+                        context.conversationMode === mode.id
                           ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
                           : "bg-black/20 border-white/5 text-zinc-500 hover:border-white/10"
                       )}
                     >
-                      {mode === 'tele' ? 'Telechat' : 'Presence'}
+                      {mode.label}
                     </button>
                   ))}
                 </div>
@@ -198,14 +266,10 @@ export const ScenePage: React.FC<ScenePageProps> = ({
                 </label>
                 
                 <div className="flex flex-col gap-2">
-                  {[
-                    { id: 'sequential', label: 'Sequential', desc: 'Natural flow based on relevance' },
-                    { id: 'random', label: 'Chaotic', desc: 'Random characters react unexpectedly' },
-                    { id: 'manual', label: 'Reactive', desc: 'Only react when directly addressed' }
-                  ].map((strat) => (
+                  {RESPONSE_STRATEGIES.map((strat) => (
                     <button
                       key={strat.id}
-                      onClick={() => setContext(prev => ({ ...prev, autoTurnOrder: strat.id as any }))}
+                      onClick={() => setContext(prev => ({ ...prev, autoTurnOrder: strat.id }))}
                       className={cn(
                         "flex items-center justify-between p-3 rounded-xl border transition-all text-left",
                         (context.autoTurnOrder || 'sequential') === strat.id 

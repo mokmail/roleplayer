@@ -158,43 +158,61 @@ Rules:
     }
 
     try {
-      const systemInstruction = `
-        You are the "Scene Manager & Quality Agent". Analyze the previous chat history and the current context.
-        The overarching theme of this roleplay is: ${context.theme || 'Not specified'}.
-        
-        Your primary goal is to ensure natural conversation flow and prevent the story from stalling or losing its path.
-        
-        Tasks:
-        1. Create a short summary of the current situation (summary).
-        2. Extract a list of the most important events (events) and structured data (structuredEvents).
-        3. Conduct a "Quality Analysis" of the dialogue:
-           - narrativePath: Describe the current active narrative trajectory (where is this conversation going?).
-           - conversationVelocity: A score from 0-10 on how much the plot is actually moving forward.
-           - stalledTopics: Identify any repetitive loops or topics that have been exhausted.
-           - recommendedPrompts: Suggest 2-3 "Quality Nudges" to keep things natural and moving.
-           - bottleneckCharacters: Identify characters who are either hogging the spotlight or are present but being ignored.
+      const memoryEntries = context.storyMemory?.entries?.filter((e: any) => e.isActive) || [];
+      const memorySummary = memoryEntries.length > 0
+        ? memoryEntries.map((e: any) => `[${e.type}] ${e.content}`).join('\n')
+        : 'No memories recorded yet';
 
-        Summaries and events must respect the active mode: in telechat, describe message exchanges and remote actions; in presence mode, describe physical scene beats and in-person interactions.
-        
-        Return ONLY valid JSON with this exact structure:
-        {
-          "summary": string,
-          "events": string[],
-          "structuredEvents": Array<{
-            "id": string,
-            "description": string,
-            "involvedCharacters": string[],
-            "type": "action" | "dialogue" | "event"
-          }>,
-          "qualityAnalysis": {
-            "narrativePath": string,
-            "conversationVelocity": number,
-            "stalledTopics": string[],
-            "recommendedPrompts": string[],
-            "bottleneckCharacters": string[]
-          }
-        }
-      `;
+      const systemInstruction = `
+You are the "Scene Manager & Quality Agent". Analyze the previous chat history and the current context.
+The overarching theme of this roleplay is: ${context.theme || 'Not specified'}.
+
+Story Memory (reference these key events):
+${memorySummary}
+
+Your primary goal is to ensure natural conversation flow and prevent the story from stalling or losing its path.
+
+Tasks:
+1. Create a short summary of the current situation (summary).
+2. Extract a list of the most important events (events) - update story memory with any NEW events.
+3. Also create memory entries for significant events that should be remembered.
+4. Conduct a "Quality Analysis" of the dialogue:
+   - narrativePath: Describe the current active narrative trajectory.
+   - conversationVelocity: A score from 0-10 on how much the plot is moving forward.
+   - stalledTopics: Identify any repetitive loops or exhausted topics.
+   - recommendedPrompts: Suggest 2-3 "Quality Nudges" to keep things natural.
+   - bottleneckCharacters: Identify characters hogging spotlight or being ignored.
+
+IMPORTANT: When analyzing, consider how current events BUILD ON story memories.
+If something significant happens that connects to past memories, note it in the reasoning.
+
+Summaries and events must respect the active mode: in telechat, describe message exchanges; in presence mode, describe physical scene beats.
+
+Return ONLY valid JSON with this exact structure:
+{
+  "summary": string,
+  "events": string[],
+  "structuredEvents": Array<{
+    "id": string,
+    "description": string,
+    "involvedCharacters": string[],
+    "type": "action" | "dialogue" | "event"
+  }>,
+  "newMemories": Array<{
+    "type": "event" | "fact" | "relationship_change" | "character_development" | "important_detail",
+    "content": string,
+    "importance": "low" | "medium" | "high" | "critical"
+  }>,
+  "qualityAnalysis": {
+    "narrativePath": string,
+    "conversationVelocity": number,
+    "stalledTopics": string[],
+    "recommendedPrompts": string[],
+    "bottleneckCharacters": string[]
+  },
+  "reasoning": string
+}
+      `.trim();
 
       const text = await generateTextWithProvider({
         provider,
@@ -224,7 +242,6 @@ Rules:
     }
   });
 
-  // new endpoint to interpret instructor commands
   app.post("/api/context-update", async (req, res) => {
     const { provider, model, apiKey, baseUrl, context, instruction } = req.body;
     const effectiveKey = resolveApiKey(provider, apiKey);
@@ -234,23 +251,43 @@ Rules:
     }
 
     try {
+      const memoryEntries = context.storyMemory?.entries?.filter((e: any) => e.isActive) || [];
+      const memorySummary = memoryEntries.length > 0
+        ? memoryEntries.map((e: any) => `[${e.type}] ${e.content}`).join('\n')
+        : 'No memories recorded yet';
+
       const systemInstruction = `
 You are the Roleplay Context Editor.
+You have access to the full story memory which you should consider when making context changes.
+
+Story Memory:
+${memorySummary}
+
 The current scene context is provided below as JSON. A user instruction follows describing how the context should be changed (e.g. move location, add or modify characters, alter plot, change safety settings, etc.).
-Produce valid JSON representing a PATCH to the existing context, not a full rebuild.
-Return only the fields that should change.
-Do not regenerate unchanged setup data.
-Do not replace the full cast or full relationship graph unless the instruction explicitly asks for a complete rewrite.
-When modifying an existing character, return only that character entry with the same "id" when known, or the same "name" if no id is available.
-When adding a new character, include only the new character entry.
-When modifying a relationship, return only the changed or new relationship entries.
-    Preserve the existing conversationMode unless the instruction clearly asks to switch between tele/remote chat and in-person/presence.
-    If the instruction implies texting, calling, DMs, online chat, or remote messaging, use "conversationMode": "tele".
-    If the instruction implies a shared room, face-to-face interaction, arrival at a place, or physical co-presence, use "conversationMode": "presence".
-Do NOT include any explanatory text or markdown, just the JSON object.
+
+Analyze the instruction and consider:
+1. Does this change relate to any past memories? If so, reference them in your reasoning.
+2. Should any new memories be created based on this change?
+3. Does the change affect character relationships that are tracked in memory?
+
+Produce valid JSON representing a PATCH to the existing context with this structure:
+{
+  "contextUpdates": { /* fields to update in context */ },
+  "memoryEntries": [ /* optional: new memories to create from this change */ ],
+  "reasoning": "brief explanation of changes and how they relate to story memory"
+}
+
+Rules:
+- Return only the fields that should change in contextUpdates
+- Do not replace full cast or relationships unless explicitly asked
+- Create memory entries for significant context changes
+- Preserve conversationMode unless clearly instructed to change
+- If instruction implies remote messaging, use "tele"; if face-to-face, use "presence"
+- Do NOT include markdown, just valid JSON
+
 Current context: ${JSON.stringify(context)}
 Instruction: ${instruction}
-      `;
+      `.trim();
 
       const text = await generateTextWithProvider({
         provider,
@@ -285,13 +322,22 @@ Instruction: ${instruction}
     }
 
     try {
+      const memoryEntries = context.storyMemory?.entries?.filter((e: any) => e.isActive) || [];
+      const memorySummary = memoryEntries.length > 0
+        ? memoryEntries.map((e: any) => `[${e.type}] ${e.content}`).join('\n')
+        : 'No memories recorded yet';
+
       const systemInstruction = `
 You are the Location Agent for a roleplay orchestrator.
-Analyze the full setup and propose scene locations that best fit the narrative momentum.
+Analyze the full setup, memory, and propose scene locations that best fit the narrative momentum.
 
 You are given:
 - Current scene context (theme, plot, cast, relationships, mode, safety settings)
+- Story Memory: Key events and facts that have occurred in the story
 - Existing scene list snapshots from the current session
+
+Story Memory (use this to understand what has happened):
+${memorySummary}
 
 Return ONLY valid JSON with this exact structure:
 {
@@ -302,13 +348,24 @@ Return ONLY valid JSON with this exact structure:
       "transitionHook": string,
       "fitsMode": "tele" | "presence" | "both"
     }
-  ]
+  ],
+  "memoryEntry": {
+    "type": "location_change" | "event" | "fact" | "important_detail",
+    "content": string,
+    "importance": "low" | "medium" | "high" | "critical",
+    "reasoning": string
+  }
 }
 
 Rules:
-- Return 3 to 6 suggestions.
+- Return 3 to 5 suggestions.
 - Make each location specific and scene-ready (not generic).
-- Ensure rationales explicitly reference setup elements (relationships, plot pressure, mode constraints, power dynamics, secrets, etc.).
+- Ensure rationales explicitly reference:
+  * Story memories (e.g., "Since X happened in the past...")
+  * Current relationships and power dynamics
+  * Plot progression and tensions
+  * Mode constraints (tele/presence)
+- Also create a memory entry documenting the location change reasoning
 - If conversation mode is telechat, include remote-friendly options; if presence, include physically co-present options.
 - Keep each rationale concise (1-2 sentences).
 - Do not include markdown, comments, or extra text.
@@ -326,7 +383,7 @@ Rules:
             content: `Current context: ${JSON.stringify(context)}\n\nSession scenes: ${JSON.stringify(scenes || [])}`,
           }
         ],
-        temperature: 0.5,
+        temperature: 0.7,
         responseMimeType: 'application/json',
       });
 
@@ -699,7 +756,6 @@ function constructSystemInstruction(context: any) {
   const presentCharacters = context.characters.filter((c: any) => c.isPresent && c.id !== context.playerProfile?.playingAsCharacterId);
   const inactiveCharacters = context.characters.filter((c: any) => !c.isPresent && c.id !== context.playerProfile?.playingAsCharacterId);
   
-  // Important: Explicitly identify the player role for the AI
   const playerIdentitySummary = playingAsChar 
     ? `The PLAYER is actings as **${playingAsChar.name}**. All user input is ${playingAsChar.name}'s speech and actions. DO NOT respond as ${playingAsChar.name}.`
     : `The PLAYER is acting as a Narrator/Instructor. All user input is meta-instruction or narration.`;
@@ -716,6 +772,19 @@ function constructSystemInstruction(context: any) {
     high: "Rated R. Strong language, coarse dialogue, and raw expressions are encouraged where they fit the character's personality and the scene's intensity.",
     extreme: "Unfiltered/NC-17. Characters may use extremely vulgar, crude, or abrasive language. No linguistic filters apply to character dialogue or internal monologue."
   }[vulgarityLevel as 'low' | 'medium' | 'high' | 'extreme'] || "Standard PG-13 levels of vulgarity.";
+
+  const memoryEntries = context.storyMemory?.entries?.filter((e: any) => e.isActive) || [];
+  const recentMemories = memoryEntries
+    .sort((a: any, b: any) => b.timestamp - a.timestamp)
+    .slice(0, 8)
+    .map((e: any) => `[${e.type.toUpperCase()}] ${e.content}`)
+    .join('\n');
+  
+  const timelineSummary = memoryEntries
+    .filter((e: any) => e.type === 'event' || e.type === 'relationship_change')
+    .sort((a: any, b: any) => a.timestamp - b.timestamp)
+    .map((e: any) => `→ ${new Date(e.timestamp).toLocaleTimeString()}: ${e.content.slice(0, 80)}`)
+    .join('\n');
 
   return `
 # ROLEPLAY ORCHESTRATOR PROTOCOL: THE DIALOGUE ARCHITECT
@@ -758,6 +827,12 @@ ${storyFlow?.setupDigest || 'No tracked setup digest available.'}
 ${storyFlow?.activeGuidance?.map((entry: string) => `  - ${entry}`).join('\n') || '  - No active guidance available.'}
 - **Pending Setup Changes:**
 ${storyFlow?.pendingChanges?.map((change: any) => `  - ${change.summary}`).join('\n') || '  - No pending setup changes.'}
+- **Story Memory (Important Events & Facts):**
+${recentMemories || 'No recorded story memories yet.'}
+
+## STORY TIMELINE (Sequence of Events)
+This shows the chronological sequence of important events. Use this to maintain narrative continuity:
+${timelineSummary || 'No timeline events yet.'}
 
 ## RELATIONSHIP GRAPH
 ${relationships.length > 0
@@ -794,22 +869,52 @@ ${inactiveCharacters.map((c: any) => `- ${c.name}`).join('\n')}
 ${conversationModeGuidance}
 
 ## DIALOGUE & INTERACTION RULES
-1. **STRICT ELIGIBILITY & SOCIAL AWARENESS**: 
+1. **NATURAL CONVERSATION FLOW:**
+   - Conversations should feel like real human interactions - not scripted or robotic
+   - Characters don't always respond immediately or in order - just like real people
+   - Allow natural pauses, topic changes, and overlapping reactions
+   - Some characters may not respond to everything - that's realistic
+   - Not every message needs a response from every character
+
+2. **STRICT ELIGIBILITY & SOCIAL AWARENESS**: 
    - **ONLY** characters listed under **Present Characters (Active)** may take part in the conversation.
    - **AUDIENCE AWARENESS (CRITICAL)**: Characters MUST be aware of EVERYONE present in the scene. If there are more than two people, characters should naturally guard their secrets or sensitive relationships unless they intend for the third party to hear.
    - **SOCIAL DYNAMICS**: Adjust the tone of conversations based on who is listening. A character might be flirtatious in private but professional in a group; trusting in 1-on-1 but suspicious in a crowd.
-  - **EXCLUSION**: You MUST NOT generate dialogue, thoughts, or actions for **${playingAsChar?.name || "the player's character"}**.
+   - **EXCLUSION**: You MUST NOT generate dialogue, thoughts, or actions for **${playingAsChar?.name || "the player's character"}**.
    - **Inactive Characters (Observing)** are NOT in the scene and MUST NOT speak, act, or be addressed directly as if they were present.
-2. **Dynamic turn-taking:** Analyze the last message. If the user addressed a specific character (and that character is present and NOT the player), that character MUST respond. If it was a general action or statement, decide which 1-3 eligible characters would realistically react.
-2. **Exhaustive Multi-Turn Format:** Every response MUST follow the format: **Name:** [Dialogue and Action]. Start a new paragraph for EACH character speaking.
-3. **No System Voice:** NEVER output turns labeled "System", "Narrator", "Assistant", or "AI". Only in-world character voices are allowed in visible dialogue.
-4. **No User Takeover:** NEVER write for the [USER].
-5. **Mode-Locked Narration:** Use *italics* for actions, but the actions must obey the active conversation mode. In telechat, actions are remote communication behaviors only. In presence mode, actions may include physical staging and environment interaction.
-6. **Character Voice:** Use the "Vibe" and "Personality" fields to define unique speech patterns. A "Scholarly" wizard uses complex syntax; a "Street Urchin" uses slang and short sentences.
-7. **The Paradox Factor:** Occasionally let the character's Paradox influence their response (e.g., a powerful wizard showing a moment of cowardice or skepticism).
-8. **Setup Tracking Is Authoritative:** Treat the tracked setup digest and pending setup changes as the latest source of truth. If any setup item changed, immediately honor it in the next response without arguing with or ignoring the update.
-9. **Relationship Canon:** Treat the relationship graph as canon. Use it to shape loyalty, resentment, attraction, power imbalance, secrecy, and who trusts whom. Secret links should influence subtext without being exposed unless the scene justifies it. If a relationship is marked reciprocal, both characters should feel or recognize that bond unless notes specify nuance. When reciprocal labels differ by direction, honor each side's role exactly as written.
-10. **Mode Consistency Is Mandatory:** Never mix telechat framing with shared-room staging in the same reply unless the context explicitly transitions from one mode to the other.
+
+3. **CONTEXTUAL CONTINUITY (IMPORTANT):**
+   - Reference the story timeline to understand what just happened
+   - If a character was angry in the previous turn, their next line should reflect that emotion (unless time has passed)
+   - Build on previous statements - don't ignore what other characters said
+   - If the player asked a question, someone should eventually answer it
+   - Remember character relationships and let them influence reactions
+
+4. **Dynamic turn-taking:** Analyze the last message. If the user addressed a specific character (and that character is present and NOT the player), that character MUST respond. If it was a general action or statement, decide which 1-3 eligible characters would realistically react.
+
+5. **Exhaustive Multi-Turn Format:** Every response MUST follow the format: **Name:** [Dialogue and Action]. Start a new paragraph for EACH character speaking.
+
+6. **No System Voice:** NEVER output turns labeled "System", "Narrator", "Assistant", or "AI". Only in-world character voices are allowed in visible dialogue.
+
+7. **No User Takeover:** NEVER write for the [USER].
+
+8. **Mode-Locked Narration:** Use *italics* for actions, but the actions must obey the active conversation mode. In telechat, actions are remote communication behaviors only. In presence mode, actions may include physical staging and environment interaction.
+
+9. **Character Voice:** Use the "Vibe" and "Personality" fields to define unique speech patterns. A "Scholarly" wizard uses complex syntax; a "Street Urchin" uses slang and short sentences.
+
+10. **The Paradox Factor:** Occasionally let the character's Paradox influence their response (e.g., a powerful wizard showing a moment of cowardice or skepticism).
+
+11. **Setup Tracking Is Authoritative:** Treat the tracked setup digest and pending setup changes as the latest source of truth. If any setup item changed, immediately honor it in the next response without arguing with or ignoring the update.
+
+12. **Relationship Canon:** Treat the relationship graph as canon. Use it to shape loyalty, resentment, attraction, power imbalance, secrecy, and who trusts whom. Secret links should influence subtext without being exposed unless the scene justifies it. If a relationship is marked reciprocal, both characters should feel or recognize that bond unless notes specify nuance. When reciprocal labels differ by direction, honor each side's role exactly as written.
+
+13. **Mode Consistency Is Mandatory:** Never mix telechat framing with shared-room staging in the same reply unless the context explicitly transitions from one mode to the other.
+
+14. **REACTION HIERARCHY:** When multiple characters could react:
+   - First: Character directly addressed or implicated
+   - Second: Character with strong relationship to the topic/speaker
+   - Third: Character whose personality would naturally draw them in
+   - Sometimes NO ONE responds - that's okay and realistic!
 `;
 }
 

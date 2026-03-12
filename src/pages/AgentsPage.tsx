@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Play, Pause, RotateCcw, MapPin, Activity, Check, Lightbulb, GitCommit, Eye, Brain, Workflow, Loader2, ChevronDown, ChevronRight, Zap, Clock, Sparkles } from 'lucide-react';
+import { Play, Pause, RotateCcw, MapPin, Activity, Check, Lightbulb, Eye, Brain, Workflow, Loader2, ChevronDown, ChevronRight, Zap, Clock, Sparkles, BookOpen, Target, TrendingUp, MessageSquare, AlertCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { SceneContext, Message, AIConfig } from '../types';
+import { SceneContext, Message, AIConfig, StoryMemoryEntry, MemoryEntryType } from '../types';
+import { createMemoryEntry, getActiveMemoryEntries, addMemoryEntry } from '../lib/memory';
+import { generateLocationSuggestions, generateContextUpdate, updateSceneState } from '../services/geminiService';
 
 // Agent result types
 export interface AgentResult {
@@ -13,6 +15,18 @@ export interface AgentResult {
   summary?: string;
   events?: string[];
   context?: Partial<SceneContext>;
+  memoryEntry?: {
+    type: MemoryEntryType;
+    content: string;
+    importance: 'low' | 'medium' | 'high' | 'critical';
+    characterIds?: string[];
+  };
+  narrativeAnalysis?: {
+    tension: number;
+    characterFocus: string[];
+    plotProgression: string;
+    suggestedActions: string[];
+  };
 }
 
 // Agent configuration
@@ -43,19 +57,20 @@ interface ChangeTracker {
   characters?: string;
   events?: string[];
   summary?: string;
+  memory?: string;
+  lastMessage?: string;
 }
 
 interface AgentsPageProps {
   context: SceneContext;
   messages: Message[];
   aiConfig: AIConfig;
+  scenes?: Array<{ id: string; name: string; context: SceneContext; createdAt: number; updatedAt: number }>;
   notify?: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
   onApplyLocation?: (location: string, rationale: string, transitionHook: string, fitsMode: 'tele' | 'presence' | 'both') => void;
   onApplyContextUpdate?: (updates: Partial<SceneContext>) => void;
   onApplySceneUpdate?: (summary: string, events: string[]) => void;
-  onGenerateLocationSuggestions?: (context: SceneContext) => Promise<AgentResult[]>;
-  onGenerateContextUpdate?: (context: SceneContext, input: string) => Promise<AgentResult[]>;
-  onGenerateSceneUpdate?: (context: SceneContext, messages: Message[]) => Promise<AgentResult[]>;
+  onApplyMemory?: (entry: StoryMemoryEntry) => void;
 }
 
 // Job descriptions for each agent
@@ -70,17 +85,16 @@ const AGENT_JOBS: Record<string, string> = {
 export const AgentsPage: React.FC<AgentsPageProps> = ({
   context,
   messages,
+  aiConfig,
+  scenes,
   notify,
   onApplyLocation,
   onApplyContextUpdate,
   onApplySceneUpdate,
-  onGenerateLocationSuggestions,
-  onGenerateContextUpdate,
-  onGenerateSceneUpdate,
+  onApplyMemory,
 }) => {
   const [isOrchestratorActive, setIsOrchestratorActive] = useState(true);
   const [orchestratorStatus, setOrchestratorStatus] = useState<'idle' | 'analyzing' | 'orchestrating'>('idle');
-  const [changeLog, setChangeLog] = useState<Array<{ timestamp: string; agent: string; change: string }>>([]);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
 
   const [agents, setAgents] = useState<Agent[]>([
@@ -145,7 +159,8 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
   const previousContextRef = useRef<string>('');
   const previousMessagesLengthRef = useRef<number>(0);
 
-  const computeContextHash = useCallback((ctx: SceneContext, msgCount: number): string => {
+  const computeContextHash = useCallback((ctx: SceneContext, msgCount: number, lastMsg?: string): string => {
+    const memoryCount = ctx.storyMemory?.entries?.length || 0;
     return JSON.stringify({
       location: ctx.location,
       plot: ctx.plot,
@@ -153,6 +168,8 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
       mode: ctx.conversationMode,
       chars: ctx.characters?.map(c => c.id).join(','),
       msgCount,
+      memoryCount,
+      lastMessage: lastMsg?.slice(-50),
     });
   }, []);
 
@@ -165,9 +182,43 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
       if (oldCtx.plot !== newCtx.plot) changes.plot = newCtx.plot;
       if (oldCtx.theme !== newCtx.theme) changes.theme = newCtx.theme;
       if (oldCtx.mode !== newCtx.mode) changes.conversationMode = newCtx.mode;
+      if (oldCtx.memoryCount !== newCtx.memoryCount) changes.memory = 'updated';
+      if (oldCtx.lastMessage !== newCtx.lastMessage) changes.lastMessage = newCtx.lastMessage;
     } catch (e) { return {}; }
     return changes;
   }, []);
+
+  const analyzeEmotionalState = (msgs: Message[]): { dominant: string; shifts: string[] } => {
+    const recentMsgs = msgs.slice(-5);
+    const emotionalKeywords: Record<string, string[]> = {
+      happy: ['happy', 'joy', 'laugh', 'smile', 'excited', 'great', 'wonderful', 'love', '😊', '😂'],
+      angry: ['angry', 'furious', 'hate', 'rage', 'kill', 'stupid', 'damn', '😠', '🔥'],
+      sad: ['sad', 'cry', 'tears', 'miss', 'sorry', 'unfortunately', '😢', '💔'],
+      tense: ['nervous', 'worried', 'fear', 'careful', 'suspicious', 'watching', '😰', '⚠️'],
+      romantic: ['kiss', 'love', 'heart', 'dear', 'baby', 'romantic', '💕', '❤️'],
+    };
+    
+    const counts: Record<string, number> = { happy: 0, angry: 0, sad: 0, tense: 0, romantic: 0, neutral: 0 };
+    recentMsgs.forEach(msg => {
+      const content = msg.content.toLowerCase();
+      for (const [emotion, keywords] of Object.entries(emotionalKeywords)) {
+        if (keywords.some(k => content.includes(k))) counts[emotion]++;
+      }
+    });
+    
+    const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'neutral';
+    const shifts: string[] = [];
+    if (recentMsgs.length >= 2) {
+      const first = recentMsgs[0].content.toLowerCase();
+      const last = recentMsgs[recentMsgs.length - 1].content.toLowerCase();
+      for (const [emotion, keywords] of Object.entries(emotionalKeywords)) {
+        const firstMatch = keywords.some(k => first.includes(k));
+        const lastMatch = keywords.some(k => last.includes(k));
+        if (firstMatch !== lastMatch && lastMatch) shifts.push(emotion);
+      }
+    }
+    return { dominant, shifts };
+  };
 
   const runOrchestrator = useCallback(async () => {
     if (!isOrchestratorActive) return;
@@ -175,17 +226,10 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
     if (!orchestrator?.enabled) return;
 
     setOrchestratorStatus('analyzing');
-    const newHash = computeContextHash(context, messages.length);
+    const lastMsg = messages.length > 0 ? messages[messages.length - 1].content : undefined;
+    const newHash = computeContextHash(context, messages.length, lastMsg);
     const changes = detectChanges(previousContextRef.current, newHash);
-
-    const changeEntries = Object.entries(changes);
-    if (changeEntries.length > 0) {
-      setChangeLog(prev => [{
-        timestamp: new Date().toLocaleTimeString(),
-        agent: 'Watcher',
-        change: changeEntries.map(([k, v]) => `${k}: ${v}`).join(', '),
-      }, ...prev].slice(0, 15));
-    }
+    const emotionalState = analyzeEmotionalState(messages);
 
     previousContextRef.current = newHash;
     previousMessagesLengthRef.current = messages.length;
@@ -195,6 +239,7 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
     if (changes.location || changes.plot) agentsToRun.push('location');
     if (changes.theme || changes.conversationMode || changes.characters) agentsToRun.push('context');
     if (messages.length > previousMessagesLengthRef.current) agentsToRun.push('scene', 'watcher');
+    if (emotionalState.shifts.length > 0) agentsToRun.push('watcher');
 
     for (const agentId of agentsToRun) {
       const agent = agents.find(a => a.id === agentId);
@@ -232,31 +277,82 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
 
       switch (agentId) {
         case 'location':
-          if (onGenerateLocationSuggestions) {
-            results = await onGenerateLocationSuggestions(context);
-          } else {
-            await new Promise(r => setTimeout(r, 1500));
+          try {
+            const sceneData = scenes?.map(s => ({
+              id: s.id,
+              name: s.name,
+              context: s.context,
+              createdAt: s.createdAt,
+              updatedAt: s.updatedAt,
+            })) || [];
+            const aiResult: any = await generateLocationSuggestions(aiConfig, context, sceneData);
+            const suggestions = aiResult?.suggestions || [];
+            results = suggestions.map((s: any, i: number) => ({
+              id: String(i + 1),
+              location: s.location,
+              rationale: s.rationale,
+              transitionHook: s.transitionHook,
+              fitsMode: s.fitsMode || 'both',
+              memoryEntry: aiResult?.memoryEntry ? {
+                type: aiResult.memoryEntry.type,
+                content: aiResult.memoryEntry.content,
+                importance: aiResult.memoryEntry.importance,
+              } : undefined,
+            }));
+            resultSummary = `Generated ${results.length} locations`;
+          } catch (err: any) {
+            notify?.(`Location AI failed: ${err.message}`, 'error');
             results = generateMockResults('location');
+            resultSummary = 'Using fallback locations';
           }
-          resultSummary = `Generated ${results.length} locations`;
           break;
         case 'context':
-          if (onGenerateContextUpdate) {
-            results = await onGenerateContextUpdate(context, messages[messages.length - 1]?.content || '');
-          } else {
-            await new Promise(r => setTimeout(r, 1200));
+          try {
+            const instruction = messages[messages.length - 1]?.content || 'Review and suggest context improvements';
+            const aiResult: any = await generateContextUpdate(aiConfig, context, instruction);
+            if (aiResult?.contextUpdates) {
+              results = [{
+                id: '1',
+                context: aiResult.contextUpdates,
+                memoryEntry: aiResult.memoryEntries?.[0] ? {
+                  type: aiResult.memoryEntries[0].type,
+                  content: aiResult.memoryEntries[0].content,
+                  importance: aiResult.memoryEntries[0].importance,
+                } : undefined,
+              }];
+            }
+            resultSummary = `Analyzed context (${aiResult?.reasoning?.slice(0, 50) || 'completed'})`;
+          } catch (err: any) {
+            notify?.(`Context AI failed: ${err.message}`, 'error');
             results = generateMockResults('context');
+            resultSummary = 'Using fallback analysis';
           }
-          resultSummary = `Analyzed context changes`;
           break;
         case 'scene':
-          if (onGenerateSceneUpdate) {
-            results = await onGenerateSceneUpdate(context, messages);
-          } else {
-            await new Promise(r => setTimeout(r, 1800));
+          try {
+            const aiResult: any = await updateSceneState(aiConfig, context, messages);
+            results = [{
+              id: '1',
+              summary: aiResult?.summary || 'Scene updated',
+              events: aiResult?.events || [],
+              memoryEntry: aiResult?.newMemories?.[0] ? {
+                type: aiResult.newMemories[0].type,
+                content: aiResult.newMemories[0].content,
+                importance: aiResult.newMemories[0].importance,
+              } : undefined,
+              narrativeAnalysis: aiResult?.qualityAnalysis ? {
+                tension: aiResult.qualityAnalysis.conversationVelocity || 5,
+                characterFocus: aiResult.qualityAnalysis.bottleneckCharacters || [],
+                plotProgression: aiResult.qualityAnalysis.narrativePath || 'Continuing',
+                suggestedActions: aiResult.qualityAnalysis.recommendedPrompts || [],
+              } : undefined,
+            }];
+            resultSummary = aiResult?.reasoning?.slice(0, 60) || 'Scene analyzed';
+          } catch (err: any) {
+            notify?.(`Scene AI failed: ${err.message}`, 'error');
             results = generateMockResults('scene');
+            resultSummary = 'Using fallback analysis';
           }
-          resultSummary = `Updated scene state`;
           break;
         case 'watcher':
           results = analyzeMessagesForEvents();
@@ -264,7 +360,8 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
           break;
         case 'orchestrator':
           await new Promise(r => setTimeout(r, 500));
-          results = [{ id: '1', summary: 'Orchestration active' }];
+          const activeMemories = getActiveMemoryEntries(context.storyMemory || { entries: [] });
+          results = [{ id: '1', summary: `Orchestration active - ${activeMemories.length} memories tracked` }];
           resultSummary = 'All systems coordinated';
           break;
       }
@@ -303,34 +400,147 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
   };
 
   const analyzeMessagesForEvents = (): AgentResult[] => {
-    const recentMessages = messages.slice(-5);
+    const recentMessages = messages.slice(-8);
     const events: string[] = [];
+    let memoryEntry: AgentResult['memoryEntry'] | undefined;
+
     recentMessages.forEach((msg) => {
       const content = msg.content.toLowerCase();
-      if (content.includes('enter') || content.includes('arrives')) events.push('Character arrival');
-      if (content.includes('leave') || content.includes('depart')) events.push('Character departure');
-      if (content.includes('fight') || content.includes('attack') || content.includes('killed')) events.push('Conflict');
-      if (content.includes('agree') || content.includes('promise') || content.includes('deal')) events.push('Agreement');
-      if (content.includes('reveal') || content.includes('discover') || content.includes('secret')) events.push('Discovery');
+      const charName = msg.characterName;
+      const charIds = context.characters.filter(c => c.name === charName).map(c => c.id);
+
+      if (content.includes('enter') || content.includes('arrives')) {
+        events.push('Character arrival');
+        memoryEntry = { type: 'event', content: `${charName || 'A character'} arrived at the location`, importance: 'medium', characterIds: charIds };
+      }
+      if (content.includes('leave') || content.includes('depart') || content.includes('exits')) {
+        events.push('Character departure');
+        memoryEntry = { type: 'event', content: `${charName || 'A character'} left the scene`, importance: 'medium', characterIds: charIds };
+      }
+      if (content.includes('fight') || content.includes('attack') || content.includes('killed') || content.includes('murder')) {
+        events.push('Conflict');
+        memoryEntry = { type: 'event', content: `Violent conflict occurred: ${msg.content.slice(0, 150)}`, importance: 'critical', characterIds: charIds };
+      }
+      if (content.includes('agree') || content.includes('promise') || content.includes('deal') || content.includes('sworn')) {
+        events.push('Agreement');
+        memoryEntry = { type: 'relationship_change', content: `A pact or agreement was formed: ${msg.content.slice(0, 150)}`, importance: 'high', characterIds: charIds };
+      }
+      if (content.includes('reveal') || content.includes('discover') || content.includes('secret') || content.includes('truth')) {
+        events.push('Discovery');
+        memoryEntry = { type: 'important_detail', content: `A secret was revealed: ${msg.content.slice(0, 150)}`, importance: 'critical', characterIds: charIds };
+      }
+      if (content.includes('fall in love') || content.includes('kissed') || content.includes('romance')) {
+        events.push('Romantic moment');
+        memoryEntry = { type: 'character_development', content: `Romantic development: ${msg.content.slice(0, 150)}`, importance: 'high', characterIds: charIds };
+      }
+      if (content.includes('betray') || content.includes('lie') || content.includes('deceive')) {
+        events.push('Betrayal');
+        memoryEntry = { type: 'relationship_change', content: `A betrayal occurred: ${msg.content.slice(0, 150)}`, importance: 'critical', characterIds: charIds };
+      }
     });
+
     if (events.length === 0) return [];
-    return [{ id: 'watcher-1', events: [...new Set(events)], summary: `Detected ${events.length} event(s)` }];
+
+    const activeMemory = getActiveMemoryEntries(context.storyMemory || { entries: [] });
+    const narrativeAnalysis: AgentResult['narrativeAnalysis'] = {
+      tension: Math.min(10, Math.floor(events.length * 1.5) + (activeMemory.length > 3 ? 3 : 0)),
+      characterFocus: recentMessages.map(m => m.characterName).filter(Boolean) as string[],
+      plotProgression: activeMemory.length > 0 ? 'Building on previous events' : 'Initial setup phase',
+      suggestedActions: events.length > 2 ? ['Consider a plot twist', 'Introduce a new character'] : ['Continue building tension'],
+    };
+
+    return [{
+      id: 'watcher-1',
+      events: [...new Set(events)],
+      summary: `Detected ${events.length} event(s) - ${memoryEntry ? 'Memory will be recorded' : 'No significant memories to record'}`,
+      memoryEntry,
+      narrativeAnalysis,
+    }];
   };
 
   const generateMockResults = (id: string): AgentResult[] => {
-    const mockData: Record<string, AgentResult[]> = {
-      location: [
-        { id: '1', location: 'A dimly lit tavern', rationale: 'Natural gathering spot', transitionHook: 'The door creaks open...', fitsMode: 'presence' },
-        { id: '2', location: 'Abandoned warehouse', rationale: 'Secret meeting spot', transitionHook: 'Dust motes dance...', fitsMode: 'tele' },
-        { id: '3', location: 'Rooftop garden', rationale: 'Elevated viewpoint', transitionHook: 'City spreads below...', fitsMode: 'both' },
+    const activeMemory = getActiveMemoryEntries(context.storyMemory || { entries: [] });
+    const memoryContext = activeMemory.length > 0
+      ? ` (${activeMemory.length} memories active: ${activeMemory.slice(0, 2).map(m => m.content.slice(0, 30)).join(', ')}...)`
+      : '';
+
+    const theme = context.theme?.toLowerCase() || '';
+    const plot = context.plot?.toLowerCase() || '';
+    const mode = context.conversationMode || 'presence';
+
+    const locationTemplates: Record<string, { location: string; rationale: string; hook: string }[]> = {
+      default: [
+        { location: 'A dimly lit tavern', rationale: 'Natural gathering spot', hook: 'The door creaks open...' },
+        { location: 'Abandoned warehouse', rationale: 'Secret meeting spot near old docks', hook: 'Dust motes dance in the shafts of light...' },
+        { location: 'Rooftop garden', rationale: 'Elevated viewpoint overlooking the city', hook: 'The city spreads out below like a circuit board...' },
       ],
+      romance: [
+        { location: 'Moonlit balcony', rationale: 'Perfect for intimate conversations', hook: 'Candles flicker in the gentle breeze...' },
+        { location: 'Secluded café', rationale: 'Cozy corner for two', hook: 'The aroma of coffee fills the air...' },
+        { location: 'Botanical garden', rationale: 'Among flowers and fountains', hook: 'Butterflies dance between rose bushes...' },
+      ],
+      mystery: [
+        { location: 'Crime scene alley', rationale: 'Where secrets were buried', hook: 'Police tape flutters in the wind...' },
+        { location: 'Detective\'s office', rationale: 'Cluttered with clues and mysteries', hook: 'Newspapers cover every surface...' },
+        { location: 'Foggy dockyard', rationale: 'Where evidence washes ashore', hook: 'The fog obscures all but shapes in the distance...' },
+      ],
+      fantasy: [
+        { location: 'Enchanted forest', rationale: 'Where magic lingers in the air', hook: 'Fireflies illuminate the ancient trees...' },
+        { location: 'Wizard\'s tower', rationale: 'Filled with arcane artifacts', hook: 'Books float mid-air, their pages turning themselves...' },
+        { location: 'Dragon\'s cave', rationale: 'Treasure beyond imagination', hook: 'Gold coins scatter like pebbles...' },
+      ],
+      horror: [
+        { location: 'Abandoned asylum', rationale: 'Where the screams never stopped', hook: 'Wheelchairs rust in the hallway...' },
+        { location: 'Graveyard at midnight', rationale: 'The dead watch from below', hook: 'Fog creeps across the tombstones...' },
+        { location: 'Basement laboratory', rationale: 'Experiments best left forgotten', hook: 'Stained tables hold ancient equipment...' },
+      ],
+      scifi: [
+        { location: 'Space station observation deck', rationale: 'Stars stretch to infinity', hook: 'Planets revolve slowly in the viewport...' },
+        { location: 'Cyberpunk noodle bar', rationale: 'Neon lights and augmented patrons', hook: 'Holograms advertise everything imaginable...' },
+        { location: 'Alien ruins', rationale: 'Technology beyond comprehension', hook: 'Symbols pulse with unknown energy...' },
+      ],
+      adventure: [
+        { location: 'Desert oasis', rationale: 'A mirage or reality?', hook: 'Palm trees sway in the hot wind...' },
+        { location: 'Mountain pass', rationale: 'The only way through', hook: 'Eagles circle overhead...' },
+        { location: 'Pirate ship deck', rationale: 'Plunder awaits', hook: 'The Jolly Roger flaps in the sea breeze...' },
+      ],
+    };
+
+    let selectedLocations = locationTemplates.default;
+    for (const [key, locations] of Object.entries(locationTemplates)) {
+      if (theme.includes(key) || plot.includes(key)) {
+        selectedLocations = locations;
+        break;
+      }
+    }
+
+    const generateVariations = (base: { location: string; rationale: string; hook: string }, index: number): AgentResult => {
+      const variations = [
+        { suffix: '', desc: 'Primary location' },
+        { suffix: ' (back entrance)', desc: 'Alternate access' },
+        { suffix: ' - 2nd floor', desc: 'Different level' },
+      ];
+      const v = variations[index % variations.length];
+      return {
+        id: `${index + 1}`,
+        location: base.location + v.suffix,
+        rationale: `${base.rationale}${memoryContext}`,
+        transitionHook: base.hook,
+        fitsMode: index % 3 === 1 ? 'tele' : (index % 3 === 2 ? 'both' : mode),
+      };
+    };
+
+    const generatedLocations = selectedLocations.map((loc, i) => generateVariations(loc, i));
+
+    const mockData: Record<string, AgentResult[]> = {
+      location: generatedLocations,
       context: [
-        { id: '1', context: { theme: context.theme || 'Noir', plot: 'Tensions rise between factions' } },
-        { id: '2', context: { conversationMode: 'presence' } },
+        { id: '1', context: { theme: context.theme || 'Noir', plot: `Tensions rise between factions${memoryContext}` } },
+        { id: '2', context: { conversationMode: 'presence' }, memoryEntry: { type: 'plot_point', content: 'Mode changed to in-person interaction', importance: 'low' } },
       ],
       scene: [
-        { id: '1', summary: 'Negotiation reached critical point', events: ['Characters arrived', 'Tensions escalated'] },
-        { id: '2', summary: 'A truce has been proposed', events: ['Peace offering', 'Suspicion remains'] },
+        { id: '1', summary: `Negotiation reached critical point${memoryContext}`, events: ['Characters arrived', 'Tensions escalated'], memoryEntry: { type: 'event', content: 'Key negotiation in progress', importance: 'high' } },
+        { id: '2', summary: `A truce has been proposed${memoryContext}`, events: ['Peace offering', 'Suspicion remains'], memoryEntry: { type: 'relationship_change', content: 'New alliance potentially forming', importance: 'high' } },
       ],
     };
     return mockData[id] || [];
@@ -365,6 +575,17 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
       onApplySceneUpdate?.(result.summary, result.events || []);
       notify?.('Scene updated', 'success');
     }
+
+    if (result.memoryEntry) {
+      const newEntry = createMemoryEntry(
+        result.memoryEntry.type,
+        result.memoryEntry.content,
+        result.memoryEntry.characterIds,
+        result.memoryEntry.importance
+      );
+      onApplyMemory?.(newEntry);
+      notify?.(`Memory recorded: ${result.memoryEntry.type.replace('_', ' ')}`, 'info');
+    }
   };
 
   const toggleAgent = (id: string) => {
@@ -387,9 +608,9 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
 
   return (
     <div className="h-full overflow-y-auto custom-scrollbar p-4 space-y-4">
-      {/* Orchestrator */}
+      {/* Orchestrator Status Panel */}
       <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-3">
             <div className={cn("p-2 rounded-lg", isOrchestratorActive ? "bg-cyan-500/20 text-cyan-400" : "bg-zinc-500/20")}>
               {orchestratorStatus !== 'idle' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Workflow className="w-5 h-5" />}
@@ -409,26 +630,27 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
             {isOrchestratorActive ? 'Disable' : 'Enable'}
           </button>
         </div>
-      </div>
-
-      {/* Change Log */}
-      {changeLog.length > 0 && (
-        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <GitCommit className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-[10px] font-medium text-cyan-400">Recent Changes</span>
-          </div>
-          <div className="space-y-1 max-h-20 overflow-y-auto">
-            {changeLog.map((entry, i) => (
-              <div key={i} className="text-[10px] text-zinc-400 flex gap-2">
-                <span className="text-zinc-600">{entry.timestamp}</span>
-                <span className="text-cyan-400">{entry.agent}:</span>
-                <span className="text-zinc-300">{entry.change}</span>
+        
+        {/* Active Agents Grid */}
+        <div className="grid grid-cols-5 gap-2">
+          {agents.map(agent => (
+            <div key={agent.id} className={cn(
+              "flex flex-col items-center gap-1 p-2 rounded-lg border",
+              agent.enabled && agent.status === 'idle' ? "border-emerald-500/20 bg-emerald-500/5" : "border-white/5 bg-white/5"
+            )}>
+              <div className={cn("p-1.5 rounded-full", getStatusColor(agent.status))}>
+                {agent.status === 'running' ? <Loader2 className="w-3 h-3 animate-spin" /> : 
+                  agent.id === 'orchestrator' ? <Workflow className="w-3 h-3" /> :
+                  agent.id === 'location' ? <MapPin className="w-3 h-3" /> :
+                  agent.id === 'context' ? <Brain className="w-3 h-3" /> :
+                  agent.id === 'scene' ? <Activity className="w-3 h-3" /> :
+                  <Eye className="w-3 h-3" />}
               </div>
-            ))}
-          </div>
+              <span className="text-[9px] text-zinc-400 truncate w-full text-center">{agent.name.split(' ')[0]}</span>
+            </div>
+          ))}
         </div>
-      )}
+      </div>
 
       <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider">
         Agents ({agents.filter(a => a.enabled).length}/{agents.length})
@@ -481,8 +703,29 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
             </div>
 
             {expandedAgent === agent.id && (
-              <div className="px-3 pb-3 pt-0 space-y-3 border-t border-white/5">
-                <p className="text-xs text-zinc-500 pt-2">{agent.description}</p>
+              <div className="px-3 pb-3 pt-2 space-y-3 border-t border-white/5">
+                {/* Agent Info */}
+                <div className="space-y-1">
+                  <p className="text-xs text-zinc-500">{agent.description}</p>
+                  <div className="flex items-center gap-4 text-[10px] text-zinc-600">
+                    <span>Run count: {agent.runCount}</span>
+                    {agent.lastRun && <span>Last: {agent.lastRun}</span>}
+                  </div>
+                </div>
+
+                {/* Options / What this agent does */}
+                <div className="p-2 rounded-lg border border-white/10 bg-white/[0.02]">
+                  <div className="flex items-center gap-2 text-[10px] font-medium text-zinc-400 mb-2">
+                    <Target className="w-3 h-3" /> What it does
+                  </div>
+                  <div className="space-y-1 text-[10px] text-zinc-500">
+                    {agent.id === 'orchestrator' && <span>Monitors context changes and coordinates all agents</span>}
+                    {agent.id === 'location' && <span>Suggests scene locations based on story progression and memory</span>}
+                    {agent.id === 'context' && <span>Analyzes conversation for theme, plot, and mode updates</span>}
+                    {agent.id === 'scene' && <span>Tracks events and maintains narrative state</span>}
+                    {agent.id === 'watcher' && <span>Scans messages for significant story events and creates memories</span>}
+                  </div>
+                </div>
 
                 {/* Run History */}
                 {agent.runHistory && agent.runHistory.length > 0 && (
@@ -499,11 +742,14 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
                   </div>
                 )}
 
+                {/* Results */}
                 {agent.results && agent.results.length > 0 && (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
-                      <span className="text-[10px] font-medium text-amber-400">Results ({agent.results.length})</span>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
+                        <span className="text-[10px] font-medium text-amber-400">Results ({agent.results.length})</span>
+                      </div>
                     </div>
                     <div className="space-y-1">
                       {agent.results.map((result) => (
@@ -526,9 +772,53 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
                               {result.location || result.summary || result.context?.theme || 'Result'}
                             </span>
                           </div>
+                          {result.memoryEntry && (
+                            <div className="mt-1 flex items-center gap-1 text-[9px] text-cyan-400">
+                              <Brain className="w-2.5 h-2.5" />
+                              <span>Memory: {result.memoryEntry.type.replace('_', ' ')}</span>
+                            </div>
+                          )}
                         </button>
                       ))}
                     </div>
+
+                    {/* Narrative Analysis for watcher/scene */}
+                    {(agent.id === 'watcher' || agent.id === 'scene') && agent.results[0]?.narrativeAnalysis && (
+                      <div className="p-2 rounded-lg border border-violet-500/20 bg-violet-500/5 space-y-2">
+                        <div className="flex items-center gap-2 text-[10px] text-violet-400">
+                          <TrendingUp className="w-3 h-3" /> Narrative Analysis
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[10px]">
+                          <div className="flex items-center justify-between p-1.5 rounded bg-black/20">
+                            <span className="text-zinc-500">Tension:</span>
+                            <span className="text-amber-400 font-medium">{agent.results[0].narrativeAnalysis?.tension || 0}/10</span>
+                          </div>
+                          <div className="flex items-center justify-between p-1.5 rounded bg-black/20">
+                            <span className="text-zinc-500">Plot:</span>
+                            <span className="text-zinc-300 text-[9px] truncate">{agent.results[0].narrativeAnalysis?.plotProgression || 'N/A'}</span>
+                          </div>
+                        </div>
+                        {agent.results[0].narrativeAnalysis?.characterFocus && agent.results[0].narrativeAnalysis.characterFocus.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            <span className="text-[9px] text-zinc-500">Active:</span>
+                            {agent.results[0].narrativeAnalysis?.characterFocus.slice(0, 3).map((char, i) => (
+                              <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">{char}</span>
+                            ))}
+                          </div>
+                        )}
+                        {agent.results[0].narrativeAnalysis?.suggestedActions && (
+                          <div>
+                            <span className="text-[9px] text-zinc-500">Suggestions:</span>
+                            <ul className="mt-0.5 space-y-0.5">
+                              {agent.results[0].narrativeAnalysis?.suggestedActions.map((action, i) => (
+                                <li key={i} className="text-cyan-300 text-[9px]">• {action}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <button
                       onClick={() => applyResult(agent.id)}
                       disabled={!selectedResults[agent.id]}
@@ -542,6 +832,7 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
                   </div>
                 )}
 
+                {/* Control Buttons */}
                 <div className="flex items-center gap-2 pt-2 border-t border-white/5">
                   <button onClick={() => toggleAgent(agent.id)} className={cn(
                     "flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-medium",

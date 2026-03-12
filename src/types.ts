@@ -634,6 +634,7 @@ export interface StoryFlowState {
   recentChanges: StoryFlowChange[];
   lastSignature: string;
   lastUpdated: number;
+  storyMemoryDigest?: string;
   qualityAnalysis?: {
     narrativePath: string;
     conversationVelocity: number;
@@ -682,6 +683,25 @@ export const NARRATIVE_THEMES: NarrativeTheme[] = [
 
 export type ConversationMode = 'tele' | 'presence';
 
+export type MemoryEntryType = 'event' | 'fact' | 'character_development' | 'relationship_change' | 'plot_point' | 'location_change' | 'important_detail';
+
+export interface StoryMemoryEntry {
+  id: string;
+  type: MemoryEntryType;
+  content: string;
+  timestamp: number;
+  characterIds?: string[];
+  importance: 'low' | 'medium' | 'high' | 'critical';
+  isActive: boolean;
+  emotionalTone?: 'happy' | 'angry' | 'sad' | 'tense' | 'romantic' | 'neutral';
+  sequencePosition?: number;
+  previousEventId?: string;
+}
+
+export interface StoryMemory {
+  entries: StoryMemoryEntry[];
+}
+
 export interface SceneContext {
   location: string;
   sceneTime?: string;
@@ -698,6 +718,7 @@ export interface SceneContext {
   maxTurnsPerResponse?: number;
   autoTurnOrder?: 'sequential' | 'random' | 'manual';
   storyFlow?: StoryFlowState;
+  storyMemory?: StoryMemory;
 }
 
 export interface Message {
@@ -707,6 +728,7 @@ export interface Message {
   timestamp: number;
   characterName?: string;
   isHidden?: boolean;
+  actionText?: string;
 }
 
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'ollama' | 'mistral' | 'groq';
