@@ -186,6 +186,7 @@ export default function App() {
     return colors[Math.abs(hash) % colors.length];
   };
 
+  const [isQuickStoryExpanded, setIsQuickStoryExpanded] = useState(true);
   const [storyPrompt, setStoryPrompt] = useState(`# persona
 - Gina 50
 - Amina 45
@@ -2168,45 +2169,68 @@ user is playing role of john and is trying to find a way to have a relationship 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-6 py-8 custom-scrollbar">
             <div className="max-w-2xl mx-auto space-y-6">
-              <div className="space-y-4 p-4 bg-white/[0.03] border border-emerald-500/10 rounded-2xl">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-emerald-500/10 rounded-lg">
-                    <BotMessageSquare className="w-4 h-4 text-emerald-500" />
+              <div className="bg-gradient-to-br from-white/[0.04] to-white/[0.01] border border-white/10 rounded-2xl overflow-hidden">
+                <button
+                  onClick={() => setIsQuickStoryExpanded(!isQuickStoryExpanded)}
+                  className="w-full flex items-center justify-between p-4 hover:bg-white/[0.02] transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-emerald-500/15 rounded-xl">
+                      <BotMessageSquare className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div className="text-left">
+                      <h3 className="text-sm font-semibold text-zinc-100">Quick Story Generation</h3>
+                      <p className="text-[10px] text-zinc-500">AI-powered story setup from a single prompt</p>
+                    </div>
                   </div>
-                  <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Quick Story Generation</h3>
-                </div>
-
-                <p className="text-xs text-zinc-500 leading-relaxed">
-                  Describe the exact story you want. The engine will generate the full context, player role, cast, tone, and scene settings in one step.
-                </p>
-
-                <div className="relative">
-                  <textarea
-                    value={storyPrompt}
-                    onChange={(e) => setStoryPrompt(e.target.value)}
-                    className="w-full h-28 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-emerald-500/50 transition-colors resize-none"
-                    placeholder="Describe genre, tone, setting, your role, desired cast dynamics, pacing, content boundaries, and any important hooks..."
-                  />
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={handleQuickStoryGeneration}
-                    disabled={!storyPrompt.trim() || isGeneratingStorySetup}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500 text-white text-xs font-bold uppercase tracking-widest hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                  >
-                    {isGeneratingStorySetup ? <Loader2 className="w-4 h-4 animate-spin" /> : <WandSparkles className="w-4 h-4" />}
-                    {isGeneratingStorySetup ? 'Generating...' : 'Generate'}
-                  </button>
-                  {storyPrompt && (
-                    <button
-                      onClick={() => setStoryPrompt('')}
-                      className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                  <ChevronDown className={`w-5 h-5 text-zinc-500 transition-transform duration-300 ${isQuickStoryExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                
+                <AnimatePresence>
+                  {isQuickStoryExpanded && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden"
                     >
-                      Clear
-                    </button>
+                      <div className="px-4 pb-4 space-y-4">
+                        <p className="text-xs text-zinc-400 leading-relaxed pt-2">
+                          Describe the exact story you want. The engine will generate the full context, player role, cast, tone, and scene settings in one step.
+                        </p>
+
+                        <div className="relative">
+                          <textarea
+                            value={storyPrompt}
+                            onChange={(e) => setStoryPrompt(e.target.value)}
+                            className="w-full h-40 bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-emerald-500/50 focus:bg-black/40 transition-all resize-none placeholder:text-zinc-600"
+                            placeholder="Describe genre, tone, setting, your role, desired cast dynamics, pacing, content boundaries, and any important hooks..."
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2">
+                          {storyPrompt && (
+                            <button
+                              onClick={() => setStoryPrompt('')}
+                              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                            >
+                              Clear
+                            </button>
+                          )}
+                          <button
+                            onClick={handleQuickStoryGeneration}
+                            disabled={!storyPrompt.trim() || isGeneratingStorySetup}
+                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500 text-white text-xs font-semibold uppercase tracking-widest hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-emerald-500/20"
+                          >
+                            {isGeneratingStorySetup ? <Loader2 className="w-4 h-4 animate-spin" /> : <WandSparkles className="w-4 h-4" />}
+                            {isGeneratingStorySetup ? 'Generating...' : 'Generate'}
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
                   )}
-                </div>
+                </AnimatePresence>
               </div>
 
               <AnimatePresence initial={false}>
@@ -2298,42 +2322,40 @@ user is playing role of john and is trying to find a way to have a relationship 
                             </span>
                           )}
                         </div>
-                        <div className="flex items-start gap-4 max-w-[95%]">
-                          <div className="flex-1">
-                            {msg.content && (
-                              <div className={cn(
-                                "px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-lg relative overflow-hidden",
-                                isPersonaUser 
-                                  ? `${getCharacterColor(msg.characterName)} text-white rounded-tr-none shadow-emerald-900/10` 
-                                  : "bg-zinc-800 border border-white/10 text-zinc-200 rounded-tl-none"
-                              )}>
-                                <div className={cn(
-                                  "markdown-body prose prose-invert prose-sm max-w-none transition-all",
-                                  shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && "blur-md select-none"
-                                )}>
-                                  <Markdown>{sanitizeExplicitMarker(msg.content)}</Markdown>
-                                </div>
-                                {shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && (
-                                  <div className="absolute inset-0 flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
-                                    <button
-                                      onClick={() => setRevealedExplicitMessages(prev => ({ ...prev, [msg.id]: true }))}
-                                      className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/60 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-amber-300 transition-all hover:bg-black/80"
-                                    >
-                                      <Eye className="w-3 h-3" /> Reveal explicit content
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          {msg.actionText && (
+                        <div className="max-w-[95%]">
+                          {msg.content && (
                             <div className={cn(
-                              "flex-1 max-w-[40%] px-3 py-2 rounded-xl text-xs italic border",
+                              "px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-lg relative overflow-hidden",
                               isPersonaUser 
-                                ? "bg-emerald-900/10 border-emerald-500/20 text-emerald-300/70"
-                                : "bg-white/5 border-white/5 text-zinc-500"
+                                ? `${getCharacterColor(msg.characterName)} text-white rounded-tr-none shadow-emerald-900/10` 
+                                : "bg-zinc-800 border border-white/10 text-zinc-200 rounded-tl-none"
                             )}>
-                              <Markdown>{msg.actionText}</Markdown>
+                              {msg.actionText && (
+                                <div className={cn(
+                                  "mb-3 px-3 py-2 rounded-xl text-xs italic border",
+                                  isPersonaUser 
+                                    ? "bg-emerald-900/10 border-emerald-500/20 text-emerald-300/70"
+                                    : "bg-white/5 border-white/5 text-zinc-500"
+                                )}>
+                                  <Markdown>{msg.actionText}</Markdown>
+                                </div>
+                              )}
+                              <div className={cn(
+                                "markdown-body prose prose-invert prose-sm max-w-none transition-all",
+                                shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && "blur-md select-none"
+                              )}>
+                                <Markdown>{sanitizeExplicitMarker(msg.content)}</Markdown>
+                              </div>
+                              {shouldBlurMessage(msg, context) && !revealedExplicitMessages[msg.id] && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
+                                  <button
+                                    onClick={() => setRevealedExplicitMessages(prev => ({ ...prev, [msg.id]: true }))}
+                                    className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/60 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-amber-300 transition-all hover:bg-black/80"
+                                  >
+                                    <Eye className="w-3 h-3" /> Reveal explicit content
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
