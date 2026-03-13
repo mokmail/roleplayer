@@ -25,7 +25,11 @@ async function startServer() {
     }
 
     try {
-      const systemInstruction = constructSystemInstruction(context);
+      const contextWithMessageCount = {
+        ...context,
+        _messageCount: history?.length || 0,
+      };
+      const systemInstruction = constructSystemInstruction(contextWithMessageCount);
       const text = await generateTextWithProvider({ provider, model, baseUrl, effectiveKey, systemInstruction, history, temperature: 0.9 });
       return res.json({ text });
     } catch (error: any) {
@@ -105,8 +109,15 @@ CRITICAL ID MAPPING RULES:
 - Example: If you have a character with "name": "John" and "id": "john", then any relationship involving John MUST use "john" as the sourceCharacterId or targetCharacterId
 - NEVER use different ID formats for the same character
 
+CRITICAL OUTPUT SIZE LIMIT:
+- Keep the total JSON under 8000 characters to ensure complete transmission
+- Limit to 4-6 characters maximum
+- Limit to 8-12 relationships maximum
+- Keep all text fields concise (backstory max 200 chars, notes max 100 chars)
+- Do NOT truncate relationships - if you exceed the limit, reduce characters instead
+
 Rules:
-- Create 2 to 6 strong characters unless the prompt clearly asks otherwise.
+- Create 2 to 4 strong characters unless the prompt clearly asks otherwise.
 - Every character must have a distinct voice, motivation, and role in the opening situation.
 - Give every character a simple lowercase ID derived from their name and use those exact IDs in the relationships array.
 - Use "kind" as the actual relationship text shown in the graph and prompts, such as "friend", "son", "boss", or "lover".
@@ -465,6 +476,87 @@ Rules:
     }
   });
 
+  app.post("/api/action-suggestions", async (req, res) => {
+    const { provider, model, apiKey, baseUrl, context, lastMessage, recentHistory } = req.body;
+    const effectiveKey = resolveApiKey(provider, apiKey);
+
+    if (!effectiveKey && provider !== 'ollama') {
+      return res.status(400).json({ error: `No API key found for provider: ${provider}` });
+    }
+
+    try {
+      const conversationMode = context.conversationMode || 'presence';
+      const presentCharacters = context.characters?.filter((c: any) => c.isPresent) || [];
+      const targetName = lastMessage?.characterName || 'them';
+
+      const systemInstruction = `
+You are an In-Chat Action Suggestion Agent for a roleplay orchestrator.
+Your job is to analyze the current message and conversation context, then suggest contextually appropriate actions.
+
+You receive:
+- Current scene context (theme, location, plot, characters)
+- The latest AI message to respond to
+- Recent message history (up to 10 messages)
+
+${conversationMode === 'tele' ? `
+Conversation Mode: TELECHAT (text messaging)
+Actions should feel like text message exchanges - flirty, provocative, direct, emotional.
+` : `
+Conversation Mode: PRESENCE (in-person)
+Actions should be physical, spatial, and interpersonal - body language, proximity, gestures.
+`}
+
+Return ONLY valid JSON with this exact structure:
+{
+  "suggestions": [
+    {
+      "id": string (unique lowercase id),
+      "label": string (short action label, max 20 chars),
+      "prompt": string (1-2 sentence action description that will be sent to the AI),
+      "icon": string (one of: reply, confront, seduce, whisper, provoke, confess, deflect, reassure, press, ghost, look-over, break-tension, get-away, leave, ignore, tease, apologize, insist, change-subject)
+    }
+  ]
+}
+
+Rules:
+- Return exactly 3-6 suggestions that are MOST relevant to the current message and context
+- Suggestions must match the conversation mode (tele/presence)
+- Each label should be concise (max 20 characters)
+- The prompt should naturally continue the scene
+- Analyze emotional tone: if message is heated, suggest calm/deflect options; if flirty, match the energy; if tense, offer confrontation or escape
+- Consider character relationships from context
+- Do not include markdown fences or extra commentary.
+`.trim();
+
+      const text = await generateTextWithProvider({
+        provider,
+        model,
+        baseUrl,
+        effectiveKey,
+        systemInstruction,
+        history: [
+          {
+            role: 'user',
+            content: `Context: ${JSON.stringify({ theme: context.theme, location: context.location, plot: context.plot, characters: presentCharacters.map((c: any) => ({ name: c.name, personality: c.personality, profession: c.profession })), relationships: context.relationships })}\n\nLatest message: ${JSON.stringify(lastMessage)}\n\nRecent history: ${JSON.stringify((recentHistory || []).slice(-10))}\n\nTarget character: ${targetName}`,
+          }
+        ],
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+      });
+
+      try {
+        const parsed = parseJsonObject(text);
+        return res.json(parsed);
+      } catch (parseError: any) {
+        console.warn("Action suggestions agent returned invalid JSON, forwarding raw text", parseError.message);
+        return res.json({ text });
+      }
+    } catch (error: any) {
+      console.error("Action suggestions API error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -530,20 +622,30 @@ function buildConversationModeGuidance(conversationMode?: string) {
 function repairJsonText(text: string) {
   let repaired = text.trim().replace(/```[a-z]*/gi, '').trim();
 
-  repaired = repaired.replace(/'([^'\n]*)'\s+'([^']+)'\s*:/g, "'$1', '$2':");
-  repaired = repaired.replace(/"([^"]+)"\s+"([^"]+)"\s*:\s*/g, '"$1", "$2": ');
-  repaired = repaired.replace(/([\]\}])\s+("[a-zA-Z_])/g, '$1, $2');
-  repaired = repaired.replace(/,\s*([\]\}])/g, '$1');
+  // Handle quotes inside strings - the main issue with notes fields containing colons
+  // Escape any colons that appear after word characters within quoted strings
+  repaired = repaired.replace(/"([^"]*)":\s*"/g, '"$1":\\"');
+  repaired = repaired.replace(/([^\\])"([^"]*:)([^"]*)"/g, '$1\\"$2$3\\"');
+  
+  // Replace single quotes with double quotes
   repaired = repaired.replace(/'([^'\n]*)'/g, (match) => match.replace(/'/g, '"'));
-  repaired = repaired.replace(/([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+  
+  // Fix missing quotes around property names
+  repaired = repaired.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3');
+  
+  // Fix bare string values that look like they should be quoted
   repaired = repaired.replace(/:\s*([a-zA-Z][a-zA-Z0-9_]*)\s*([,}\]])/g, (match, value, end) => {
     if (value === 'true' || value === 'false' || value === 'null') {
       return `: ${value}${end}`;
     }
     return `: "${value}"${end}`;
   });
-  repaired = repaired.replace(/("[^"]+"\s*:\s*"[^"]+")\s*(?=\n\s*"[^"]+"\s*:)/g, '$1,');
-  repaired = repaired.replace(/(^\s*"[^"]+"\s*:\s*.*?,\s*$)\n\s*[^\n:{}\[\]]+\s*$\n(?=\s*"[^"]+"\s*:)/gm, '$1\n');
+  
+  // Fix missing commas between properties
+  repaired = repaired.replace(/([\]\}])\s+("[a-zA-Z_])/g, '$1, $2');
+  
+  // Remove trailing commas
+  repaired = repaired.replace(/,\s*([\]\}])/g, '$1');
 
   return repaired;
 }
@@ -744,6 +846,36 @@ async function generateTextWithProvider({
   throw new Error("Unsupported provider");
 }
 
+function buildCharacterKnowledgeSection(context: any): string {
+  const revelations = context.storyRevelations;
+  const characters = context.characters || [];
+  const charMap = new Map(characters.map((c: any) => [c.id, c.name]));
+
+  if (!revelations || !revelations.characterKnowledge || revelations.characterKnowledge.length === 0) {
+    return 'No secrets have been discovered yet. Characters only know what has been explicitly revealed in the story so far.';
+  }
+
+  const knownSections = revelations.characterKnowledge
+    .filter((k: any) => k.knownSecrets && k.knownSecrets.length > 0)
+    .map((k: any) => {
+      const charName = charMap.get(k.characterId) || 'Unknown';
+      const secretsList = k.knownSecrets.slice(0, 5).map((s: string) => `  - ${s}`).join('\n');
+      return `### ${charName} now knows:\n${secretsList}`;
+    })
+    .join('\n\n');
+
+  if (!knownSections) {
+    return 'No secrets have been discovered yet.';
+  }
+
+  const unrevealed = revelations.beats?.filter((b: any) => !b.isRevealed) || [];
+  const pendingSection = unrevealed.length > 0 
+    ? `\n\n### Secrets Not Yet Discovered (DO NOT reveal unless story triggers them):\n${unrevealed.slice(0, 5).map((b: any) => `  - Trigger: "${b.triggerCondition}" → ${b.content.slice(0, 60)}...`).join('\n')}`
+    : '';
+
+  return `${knownSections}${pendingSection}`;
+}
+
 function constructSystemInstruction(context: any) {
   const playingAsChar = context.characters.find((c: any) => c.id === context.playerProfile?.playingAsCharacterId);
   const effectivePlayerProfile = playingAsChar ? {
@@ -765,13 +897,30 @@ function constructSystemInstruction(context: any) {
   const describeCharacter = (id: string) => context.characters.find((character: any) => character.id === id)?.name || 'Unknown';
   const conversationModeGuidance = buildConversationModeGuidance(context.conversationMode);
   
-  const vulgarityLevel = context.contentSafety?.vulgarityLevel || 'medium';
+  const currentVulgarity = context.contentSafety?.vulgarityLevel || 'low';
+  const messageCount = context._messageCount || 0;
+  
+  let dynamicVulgarity = currentVulgarity;
+  if (currentVulgarity === 'low') {
+    if (messageCount > 8) {
+      dynamicVulgarity = 'medium';
+    }
+  } else if (currentVulgarity === 'medium') {
+    if (messageCount > 20) {
+      dynamicVulgarity = 'high';
+    }
+  } else if (currentVulgarity === 'high') {
+    if (messageCount > 35) {
+      dynamicVulgarity = 'extreme';
+    }
+  }
+  
   const vulgarityGuidance = {
-    low: "Maintain a G-rated/Clean PG-13 atmosphere. No profanity. Use euphemisms or omit harsh language entirely.",
-    medium: "Standard PG-13/TV-MA. Minor profanity is allowed if character-appropriate. Avoid excessive or gratuitous vulgarity.",
-    high: "Rated R. Strong language, coarse dialogue, and raw expressions are encouraged where they fit the character's personality and the scene's intensity.",
-    extreme: "Unfiltered/NC-17. Characters may use extremely vulgar, crude, or abrasive language. No linguistic filters apply to character dialogue or internal monologue."
-  }[vulgarityLevel as 'low' | 'medium' | 'high' | 'extreme'] || "Standard PG-13 levels of vulgarity.";
+    low: "Maintain a CLEAN atmosphere. No profanity. Use euphemisms or omit harsh language entirely. Fade to black on intimate moments.",
+    medium: "Standard PG-13/TV-MA. Minor profanity is allowed if character-appropriate. Intimate moments can be described but keep tasteful.",
+    high: "Rated R. Strong language, coarse dialogue allowed. Intimate scenes can be more explicit but focus on emotion and buildup.",
+    extreme: "Unfiltered/NC-17. No limits on language or content. Explicit scenes fully detailed."
+  }[dynamicVulgarity as 'low' | 'medium' | 'high' | 'extreme'] || "Maintain a CLEAN atmosphere.";
 
   const memoryEntries = context.storyMemory?.entries?.filter((e: any) => e.isActive) || [];
   const recentMemories = memoryEntries
@@ -800,7 +949,7 @@ ${playerIdentitySummary}
 - **GAMEPLAY FLOW**: When the user speaks as their character, reacting as the other present AI characters to create a dynamic "Game Player vs World" feel.
 
 ## CONTENT CONTROLS
-- **VULGARITY LEVEL:** ${vulgarityLevel.toUpperCase()}
+- **VULGARITY LEVEL:** ${dynamicVulgarity.toUpperCase()}
 - **GUIDANCE:** ${vulgarityGuidance}
 
 ## SCENE CONTEXT
@@ -833,6 +982,10 @@ ${recentMemories || 'No recorded story memories yet.'}
 ## STORY TIMELINE (Sequence of Events)
 This shows the chronological sequence of important events. Use this to maintain narrative continuity:
 ${timelineSummary || 'No timeline events yet.'}
+
+## CHARACTER KNOWLEDGE & SECRET REVELATION
+This section tracks what secrets have been discovered and what each character now knows:
+${buildCharacterKnowledgeSection(context)}
 
 ## RELATIONSHIP GRAPH
 ${relationships.length > 0

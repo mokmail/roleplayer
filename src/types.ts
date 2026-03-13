@@ -702,6 +702,77 @@ export interface StoryMemory {
   entries: StoryMemoryEntry[];
 }
 
+export interface StoryRevelationBeat {
+  id: string;
+  triggerCondition: string;
+  revealTo: string[];
+  content: string;
+  isRevealed: boolean;
+  revealedAt?: number;
+}
+
+export interface CharacterKnowledgeState {
+  characterId: string;
+  knownSecrets: string[];
+  knownRelationships: string[];
+  discoveredFacts: string[];
+}
+
+export interface StoryRevelations {
+  beats: StoryRevelationBeat[];
+  characterKnowledge: CharacterKnowledgeState[];
+}
+
+export interface CharacterSecret {
+  id: string;
+  content: string;
+  sourceEntryId?: string;
+  discoveredAt: number;
+  discoveredFrom?: string;
+  trustLevel: number;
+  isBelieved: boolean;
+}
+
+export interface CharacterObservation {
+  id: string;
+  content: string;
+  entryId?: string;
+  timestamp: number;
+  emotionalImpact: 'positive' | 'negative' | 'neutral';
+  involvedCharacters: string[];
+}
+
+export interface CharacterKnownRelationship {
+  targetCharacterId: string;
+  kind: string;
+  knownSince: number;
+  isDirectlyObserved: boolean;
+  sourceOfKnowledge?: string;
+}
+
+export interface CharacterKnowledgeLevel {
+  knowledgeScore: number;
+  understoodPlotPoints: string[];
+  misconceptions: string[];
+  lastUpdated: number;
+}
+
+export interface CharacterAgent {
+  characterId: string;
+  knownFacts: string[];
+  secretsKnown: CharacterSecret[];
+  relationships: CharacterKnownRelationship[];
+  observations: CharacterObservation[];
+  emotionalMemory: { eventId: string; emotion: string; intensity: number }[];
+  knowledgeLevel: CharacterKnowledgeLevel;
+  lastSyncTimestamp: number;
+}
+
+export interface CharacterAgentState {
+  agents: Record<string, CharacterAgent>;
+  lastGlobalSync: number;
+}
+
 export interface SceneContext {
   location: string;
   sceneTime?: string;
@@ -719,6 +790,8 @@ export interface SceneContext {
   autoTurnOrder?: 'sequential' | 'random' | 'manual';
   storyFlow?: StoryFlowState;
   storyMemory?: StoryMemory;
+  storyRevelations?: StoryRevelations;
+  characterAgents?: CharacterAgent[];
 }
 
 export interface Message {
@@ -729,6 +802,8 @@ export interface Message {
   characterName?: string;
   isHidden?: boolean;
   actionText?: string;
+  isDirectMessage?: boolean;
+  visibleTo?: string[];
 }
 
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'ollama' | 'mistral' | 'groq';

@@ -2,8 +2,6 @@ import React, { useState, useMemo } from 'react';
 import { SceneContext, Message, AIConfig, NARRATIVE_THEMES, NarrativeTheme, ConversationMode } from '../types';
 import { MapPin, BookOpen, Palette, Zap, Users2, Settings2, ShieldAlert, EyeOff, BadgeAlert, BotMessageSquare, Expand, X, AlertTriangle, Clock, Edit3 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { SceneManager } from '../components/SceneManager';
-import { SocialGraph } from '../components/SocialGraph';
 import { cn } from '../lib/utils';
 import { validateStorySetup, StorySetupValidation } from '../lib/contextTracker';
 
@@ -27,7 +25,6 @@ const TIME_OPTIONS = [
 
 const CONVERSATION_MODES = [
   { id: 'presence', label: 'Presence' },
-  { id: 'tele', label: 'Telechat' }
 ] as const;
 
 interface ScenePageProps {
@@ -70,12 +67,11 @@ export const ScenePage: React.FC<ScenePageProps> = ({
             </div>
           </div>
 
-          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-6">
+          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-5">
             {[
               { label: 'Theme', value: context.theme || 'Not set' },
               { label: 'Location', value: context.location || 'Not set' },
               { label: 'Time', value: context.sceneTime || 'Not set' },
-              { label: 'Mode', value: context.conversationMode === 'tele' ? 'Telechat' : (context.conversationMode === 'presence' ? 'Presence' : 'Not set') },
               { label: 'Turns', value: `${context.maxTurnsPerResponse || 3} max` },
               { label: 'Strategy', value: STRATEGY_LABELS[context.autoTurnOrder || 'sequential'] || 'Sequential' },
             ].map((item) => (
@@ -186,28 +182,6 @@ export const ScenePage: React.FC<ScenePageProps> = ({
                     </optgroup>
                   ))}
                 </select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-2">
-                  <Users2 className="w-3 h-3" /> Conversation Mode
-                </label>
-                <div className="flex gap-2">
-                  {CONVERSATION_MODES.map((mode) => (
-                    <button
-                      key={mode.id}
-                      onClick={() => onConversationModeChange(mode.id)}
-                      className={cn(
-                        "flex-1 p-3 rounded-xl border text-xs font-medium transition-all",
-                        context.conversationMode === mode.id
-                          ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                          : "bg-black/20 border-white/5 text-zinc-500 hover:border-white/10"
-                      )}
-                    >
-                      {mode.label}
-                    </button>
-                  ))}
-                </div>
               </div>
 
               <div className="space-y-2">
@@ -461,34 +435,6 @@ export const ScenePage: React.FC<ScenePageProps> = ({
             </div>
           </div>
 
-        </section>
-
-        {/* Cast & Scenes */}
-        <section className="rounded-3xl border border-white/5 bg-white/[0.03] p-5 space-y-5">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-2xl bg-amber-500/10 border border-amber-500/20">
-              <Users2 className="w-4 h-4 text-amber-400" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Cast & Scenes</h3>
-              <p className="text-xs text-zinc-500 uppercase tracking-widest">Manage characters and scene flow</p>
-            </div>
-          </div>
-
-          <SocialGraph
-            context={context}
-            setContext={setContext}
-          />
-
-          <div className="pt-2">
-            <SceneManager
-              context={context}
-              messages={messages}
-              aiConfig={aiConfig}
-              onUpdateContext={(updates) => setContext(prev => ({ ...prev, ...updates }))}
-              notify={notify}
-            />
-          </div>
         </section>
 
         <AnimatePresence>

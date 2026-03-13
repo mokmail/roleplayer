@@ -439,3 +439,64 @@ ${inactiveCharacters.map((c: any) => `- ${c.name}`).join('\n')}
 9. **Explicit Content Rules:** If explicit content mode is "fade-to-black", avoid graphic sexual detail and imply intimate moments with restrained language. If explicit content mode is "allow" and a turn contains explicit sexual content, include the marker [explicit] once near the start of that turn so the UI can indicate and blur it.
 `;
 }
+
+export type ActionSuggestion = {
+  id: string;
+  label: string;
+  prompt: string;
+  icon: string;
+};
+
+export async function generateActionSuggestions(
+  config: AIConfig,
+  context: SceneContext,
+  lastMessage: Message,
+  recentHistory: Message[]
+): Promise<ActionSuggestion[]> {
+  const response = await fetch('/api/action-suggestions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider: config.provider,
+      model: config.model,
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      context,
+      lastMessage: {
+        id: lastMessage.id,
+        content: lastMessage.content,
+        characterName: lastMessage.characterName,
+        role: lastMessage.role,
+        actionText: lastMessage.actionText,
+      },
+      recentHistory: recentHistory.map(m => ({
+        id: m.id,
+        content: m.content,
+        characterName: m.characterName,
+        role: m.role,
+        actionText: m.actionText,
+      })),
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response, 'Failed to generate action suggestions'));
+  }
+
+  const payload = await readApiPayload<{ suggestions?: ActionSuggestion[]; text?: string }>(response);
+
+  if (payload && typeof payload === 'object' && 'suggestions' in payload && Array.isArray(payload.suggestions)) {
+    return payload.suggestions;
+  }
+
+  if (payload && typeof payload === 'object' && 'text' in payload && typeof payload.text === 'string') {
+    try {
+      const parsed = JSON.parse(payload.text);
+      if (parsed.suggestions && Array.isArray(parsed.suggestions)) {
+        return parsed.suggestions;
+      }
+    } catch {}
+  }
+
+  return [];
+}

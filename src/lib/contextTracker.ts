@@ -1,5 +1,5 @@
-import { Character, SceneContext, StoryFlowChange, StoryFlowState } from '../types';
-import { buildMemoryDigest, createEmptyMemory } from './memory';
+import { Character, SceneContext, StoryFlowChange, StoryFlowState, StoryRevelationBeat } from '../types';
+import { buildMemoryDigest, createEmptyMemory, createEmptyRevelations, addRevelationBeat, revealBeat, detectRevelationInContent, getPendingRevelations, createRevelationsFromCharacters } from './memory';
 
 const MAX_RECENT_CHANGES = 12;
 const MAX_PENDING_CHANGES = 6;
@@ -14,10 +14,20 @@ export function validateStorySetup(context: SceneContext): StorySetupValidation 
   const missingComponents: string[] = [];
   const warnings: string[] = [];
 
-  const hasPersona = cleanText(context.playerProfile?.persona);
-  if (!hasPersona) {
+  const isPlayingAsCharacter = !!context.playerProfile?.playingAsCharacterId;
+  const playingAsChar = isPlayingAsCharacter 
+    ? context.characters?.find(c => c.id === context.playerProfile?.playingAsCharacterId)
+    : null;
+  
+  const playerPersonaText = cleanText(context.playerProfile?.persona);
+  const playingAsPersonalityText = playingAsChar ? cleanText(playingAsChar.personality) : '';
+  const hasPlayerPersona = !!playerPersonaText || !!playingAsPersonalityText;
+  const hasCharacterPersonas = context.characters?.some(c => cleanText(c.personality));
+  
+  const hasAnyPersonaOrCharacter = hasPlayerPersona || hasCharacterPersonas || isPlayingAsCharacter;
+  if (!hasAnyPersonaOrCharacter) {
     missingComponents.push('persona');
-    warnings.push('No player persona defined - the AI won\'t know how to address or characterize you');
+    warnings.push('No persona defined - you need at least one character (yourself or in the cast)');
   }
 
   if (!cleanText(context.location)) {
@@ -25,19 +35,22 @@ export function validateStorySetup(context: SceneContext): StorySetupValidation 
     warnings.push('No location set - scenes need a place to happen');
   }
 
-  if (!cleanText(context.theme)) {
+  const hasTheme = cleanText(context.theme);
+  if (!hasTheme || hasTheme.toLowerCase() === 'custom') {
     missingComponents.push('theme');
     warnings.push('No theme specified - the AI won\'t know the tone or genre');
   }
 
-  if (!cleanText(context.sceneTime)) {
+  const hasTime = cleanText(context.sceneTime);
+  if (!hasTime) {
     missingComponents.push('time');
     warnings.push('No time of day/date set - scenes benefit from temporal context');
   }
 
-  if (!context.conversationMode) {
-    missingComponents.push('mode');
-    warnings.push('No conversation mode set - specify tele (telechat) or presence (in-person)');
+  const hasPlot = cleanText(context.plot);
+  if (!hasPlot) {
+    missingComponents.push('plot');
+    warnings.push('No plot/scenario defined - the AI needs a story direction');
   }
 
   const isComplete = missingComponents.length === 0;
@@ -308,10 +321,16 @@ function diffContextChanges(previousContext: SceneContext, nextContext: SceneCon
 }
 
 export function syncSceneContextTracking(nextContext: SceneContext, previousContext?: SceneContext) {
+  const hasExistingRevelations = nextContext.storyRevelations && 
+    (nextContext.storyRevelations.beats.length > 0 || nextContext.storyRevelations.characterKnowledge.length > 0);
+  
   const normalizedNextContext: SceneContext = {
     ...nextContext,
     conversationMode: normalizeConversationMode(nextContext.conversationMode),
     storyMemory: nextContext.storyMemory || createEmptyMemory(),
+    storyRevelations: hasExistingRevelations 
+      ? nextContext.storyRevelations 
+      : createRevelationsFromCharacters(nextContext.characters || []),
   };
 
   const existingFlow = normalizedNextContext.storyFlow;
@@ -340,6 +359,44 @@ export function syncSceneContextTracking(nextContext: SceneContext, previousCont
   return {
     ...normalizedNextContext,
     storyFlow,
+  };
+}
+
+export function processRevelationsFromMessage(
+  context: SceneContext,
+  messageContent: string,
+  speakerName?: string
+): SceneContext {
+  const revelations = context.storyRevelations || createEmptyRevelations();
+  const { hasRevelation, secretContent } = detectRevelationInContent(messageContent, speakerName);
+
+  if (!hasRevelation) {
+    return context;
+  }
+
+  const speaker = context.characters.find(c => c.name === speakerName);
+  const targetCharacterIds = context.characters
+    .filter(c => c.name !== speakerName && c.isPresent)
+    .map(c => c.id);
+
+  const updatedRevelations = addRevelationBeat(revelations, {
+    triggerCondition: secretContent.slice(0, 50),
+    revealTo: targetCharacterIds,
+    content: secretContent,
+  });
+
+  const revealedBeats = getPendingRevelations(updatedRevelations);
+  if (revealedBeats.length > 0) {
+    const latestBeat = revealedBeats[revealedBeats.length - 1];
+    return {
+      ...context,
+      storyRevelations: revealBeat(updatedRevelations, latestBeat.id, targetCharacterIds),
+    };
+  }
+
+  return {
+    ...context,
+    storyRevelations: updatedRevelations,
   };
 }
 

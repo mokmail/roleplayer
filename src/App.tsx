@@ -17,6 +17,9 @@ import {
   WandSparkles,
   FileUp,
   FileText,
+  MapPin,
+  Clock,
+  BookOpen,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -53,7 +56,7 @@ import Markdown from 'react-markdown';
 import { Character, CharacterRelationship, ContentSafetySettings, PlayerProfile, SceneContext, Message, SavedSession, SavedStory, AIConfig, AIProvider, ConversationMode } from './types';
 import { syncSceneContextTracking, acknowledgeSceneContextChanges } from './lib/contextTracker';
 import { addMemoryEntry } from './lib/memory';
-import { generateRoleplayResponse, generateStorySetup, updateSceneState, generateContextUpdate, generateLocationSuggestions, generateSceneTransitionPlan } from './services/geminiService';
+import { generateRoleplayResponse, generateStorySetup, updateSceneState, generateContextUpdate, generateLocationSuggestions, generateSceneTransitionPlan, generateActionSuggestions, ActionSuggestion } from './services/geminiService';
 import { CharacterWizard } from './components/CharacterWizard';
 import { cn } from './lib/utils';
 import { useNotification } from './lib/notification';
@@ -117,7 +120,7 @@ const createInitialContext = (): SceneContext => syncSceneContextTracking({
   },
   contentSafety: {
     explicitMode: 'fade-to-black',
-    vulgarityLevel: 'medium',
+    vulgarityLevel: 'low',
     blurExplicitContent: true,
     showExplicitBadges: true,
   },
@@ -239,6 +242,8 @@ user is playing role of john and is trying to find a way to have a relationship 
   const [isInstructorMode, setIsInstructorMode] = useState(false);
   const [collapsedEvents, setCollapsedEvents] = useState<Record<string, boolean>>({});
   const [openBubbleActionsFor, setOpenBubbleActionsFor] = useState<string | null>(null);
+  const [dynamicSuggestions, setDynamicSuggestions] = useState<ActionSuggestion[]>([]);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [watcherActive, setWatcherActive] = useState(false);
   const presenceSnapshotRef = useRef<Record<string, boolean>>({});
   const [savedStories, setSavedStories] = useState<SavedStory[]>(() => {
@@ -497,48 +502,60 @@ user is playing role of john and is trying to find a way to have a relationship 
       }));
   };
 
+  const mapIconNameToComponent = (iconName: string) => {
+    const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
+      reply: Reply,
+      confront: AlertTriangle,
+      seduce: Flame,
+      whisper: Ear,
+      provoke: Bomb,
+      confess: Heart,
+      deflect: ScanSearch,
+      reassure: Smile,
+      press: MessagesSquare,
+      ghost: EyeOff,
+      'look-over': Search,
+      'break-tension': Volume2,
+      'get-away': Footprints,
+      leave: EyeOff,
+      ignore: EyeOff,
+      tease: Flame,
+      apologize: Hand,
+      insist: AlertTriangle,
+      'change-subject': ScanSearch,
+    };
+    return iconMap[iconName.toLowerCase()] || Sparkles;
+  };
+
+  const loadDynamicSuggestions = async (msg: Message) => {
+    setIsLoadingSuggestions(true);
+    try {
+      const suggestions = await generateActionSuggestions(
+        aiConfig,
+        context,
+        msg,
+        messages.slice(-10)
+      );
+      setDynamicSuggestions(suggestions);
+    } catch (error) {
+      console.error('Failed to load dynamic suggestions:', error);
+      setDynamicSuggestions([]);
+    } finally {
+      setIsLoadingSuggestions(false);
+    }
+  };
+
   const buildBubbleActions = (msg: Message): QuickBubbleAction[] => {
     const targetName = msg.characterName || 'them';
+    const hasDynamicSuggestions = dynamicSuggestions.length > 0;
 
-    if (context.conversationMode === 'tele') {
-      return [
-        {
-          id: 'reply',
-          label: `Reply to ${targetName}`,
-          prompt: `I reply directly to ${targetName}.`,
-          icon: Reply,
-        },
-        {
-          id: 'press',
-          label: `Press ${targetName}`,
-          prompt: `I message ${targetName} directly and press them for a clear answer.`,
-          icon: MessagesSquare,
-        },
-        {
-          id: 'provoke',
-          label: `Provoke ${targetName}`,
-          prompt: `I send a sharp message to ${targetName} specifically to see how they react.`,
-          icon: Bomb,
-        },
-        {
-          id: 'confess',
-          label: `Confess feelings`,
-          prompt: `I've been holding it back... I send a long, honest message to ${targetName} sharing what I really feel.`,
-          icon: Heart,
-        },
-        {
-          id: 'deflect',
-          label: `Deflect ${targetName}`,
-          prompt: `I try to steer the conversation away from what ${targetName} just said by bringing up something else entirely.`,
-          icon: ScanSearch,
-        },
-        {
-          id: 'ghost',
-          label: 'Leave on read',
-          prompt: 'I read the exchange carefully, but decide not to respond for now.',
-          icon: EyeOff,
-        },
-      ];
+    if (hasDynamicSuggestions) {
+      return dynamicSuggestions.map(suggestion => ({
+        id: suggestion.id,
+        label: suggestion.label,
+        prompt: suggestion.prompt,
+        icon: mapIconNameToComponent(suggestion.icon),
+      }));
     }
 
     return [
@@ -608,21 +625,21 @@ user is playing role of john and is trying to find a way to have a relationship 
     // Fix: remove any markdown code fences that might be inside
     repaired = repaired.replace(/```[a-z]*/gi, '').trim();
     
-    // Fix: missing commas between properties - when a string value is followed by a key
-    repaired = repaired.replace(/'([^'\n]*)'\s+'([^']+)'\s*:/g, "'$1', '$2':");
-    repaired = repaired.replace(/"([^"]+)"\s+"([^"]+)"\s*:\s*/g, '"$1", "$2": ');
+    // Fix: single quotes to double quotes FIRST (before other fixes)
+    repaired = repaired.replace(/'([^'\n]*)'/g, (match) => match.replace(/'/g, '"'));
+    
+    // Fix: handle notes fields that contain colons by being more careful about strings
+    // This is the main issue - notes like "A marriage of convenience. Gina tolerates Peter; Peter tolerates Gina's affairs..."
+    // We need to escape internal colons within quoted strings
+    
+    // Fix: missing commas between properties
+    repaired = repaired.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
     
     // Fix: missing commas after object/array closing when next property starts with quote
     repaired = repaired.replace(/([\]\}])\s+("[a-zA-Z_])/g, '$1, $2');
     
     // Fix: trailing commas before } or ]
     repaired = repaired.replace(/,\s*([\]\}])/g, '$1');
-    
-    // Fix: single quotes to double quotes (common AI mistake)
-    repaired = repaired.replace(/'([^'\n]*)'/g, (match) => match.replace(/'/g, '"'));
-    
-    // Fix: missing quotes around property names
-    repaired = repaired.replace(/([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
     
     // Fix: unquoted string values (simple cases)
     repaired = repaired.replace(/:\s*([a-zA-Z][a-zA-Z0-9_]*)\s*([,}\]])/g, (match, value, end) => {
@@ -863,19 +880,8 @@ user is playing role of john and is trying to find a way to have a relationship 
 
   const normalizeIdToken = (value?: string) => value?.trim().toLowerCase().replace(/[^a-z0-9_]/g, '') || '';
   const normalizeNameToken = (value?: string) => value?.trim().toLowerCase().replace(/[^a-z0-9]/g, '') || '';
-  const normalizeConversationMode = (value: unknown, fallback: ConversationMode = 'presence'): ConversationMode => {
-    if (typeof value !== 'string') return fallback;
-    const normalized = value.trim().toLowerCase().replace(/[^a-z]/g, '');
-
-    if (normalized === 'tele' || normalized === 'telechat' || normalized === 'remote' || normalized === 'messaging' || normalized === 'chat' || normalized === 'dm') {
-      return 'tele';
-    }
-
-    if (normalized === 'presence' || normalized === 'inperson' || normalized === 'physical' || normalized === 'facetoface') {
-      return 'presence';
-    }
-
-    return fallback;
+  const normalizeConversationMode = (_value: unknown, _fallback: ConversationMode = 'presence'): ConversationMode => {
+    return 'presence';
   };
   const preferString = (incoming: unknown, fallback = '') => {
     if (typeof incoming !== 'string') return fallback;
@@ -1175,37 +1181,100 @@ user is playing role of john and is trying to find a way to have a relationship 
 
     const playingAsChar = context.characters.find(c => c.id === context.playerProfile?.playingAsCharacterId);
     
-    // In game mode, if a persona is selected, always prefix the name to ensure the AI knows WHO is acting.
-    // Also, if not in Instructor mode, ensure the message is strictly attributed to the persona.
-    const formattedContent = playingAsChar 
-      ? trimmedContent.startsWith(`**${playingAsChar.name}:**`) 
-        ? trimmedContent 
-        : `**${playingAsChar.name}:** ${trimmedContent}`
-      : trimmedContent;
+    const dmMatch = trimmedContent.match(/^@(\w+)\s+(.+)$/);
+    let isDirectMessage = false;
+    let dmTargetName = '';
+    
+    if (dmMatch) {
+      isDirectMessage = true;
+      dmTargetName = dmMatch[1];
+      const dmMessage = dmMatch[2].trim();
+    }
 
+    let finalContent = trimmedContent;
+    let actionText: string | undefined;
+    
+    if (isDirectMessage) {
+      const targetChar = context.characters.find(c => 
+        c.name.toLowerCase().replace(/\s+/g, '') === dmTargetName.toLowerCase().replace(/\s+/g, '')
+        || c.name.toLowerCase().split(/\s+/)[0] === dmTargetName.toLowerCase()
+      );
+      
+      if (targetChar) {
+        dmTargetName = targetChar.name;
+        actionText = `*sends a direct message to ${dmTargetName}*`;
+        finalContent = dmMatch[2].trim();
+      } else {
+        isDirectMessage = false;
+      }
+    }
+    
+    if (!isDirectMessage) {
+      if (playingAsChar) {
+        finalContent = trimmedContent.startsWith(`**${playingAsChar.name}:**`) 
+          ? trimmedContent 
+          : `**${playingAsChar.name}:** ${trimmedContent}`;
+      }
+    }
+
+    const visibleChars = isDirectMessage 
+      ? [playingAsChar?.name || 'Player', dmTargetName].filter(Boolean)
+      : undefined;
+    
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: formattedContent,
+      content: finalContent,
+      actionText: actionText,
       characterName: playingAsChar?.name || (isInstructorMode ? 'Instructor' : 'Player'),
       timestamp: Date.now(),
+      isDirectMessage: isDirectMessage || undefined,
+      visibleTo: visibleChars,
     };
 
-    setMessages(prev => [...prev, userMessage]);
     setInputValue('');
     setOpenBubbleActionsFor(null);
     setIsLoading(true);
 
     try {
-      const conversation = [...messages, userMessage];
-      const aiResponse = await generateRoleplayResponse(aiConfig, context, conversation);
+      const filteredConversation = messages.filter(msg => !msg.isDirectMessage);
       
-      if (aiResponse) {
-        const newMessages = buildAssistantMessages(aiResponse);
+      let aiResponse;
+      
+      if (isDirectMessage) {
+        const targetCharName = dmTargetName;
+        const dmPrompt = `${finalContent}\n\n[This is a private DM between ${playingAsChar?.name || 'Player'} and ${targetCharName}. The scene continues normally for everyone else. When you respond, ONLY respond as ${targetCharName} - do not speak for other characters. Keep it brief and private.]`;
         
-        setMessages(prev => [...prev, ...newMessages]);
-        await syncSceneState(context, [...conversation, ...newMessages]);
-        setContext(prev => acknowledgeSceneContextChanges(prev));
+        const dmMessageForAI: Message = {
+          ...userMessage,
+          content: dmPrompt,
+          actionText: `*sends a private message to ${targetCharName}*`,
+        };
+        
+        aiResponse = await generateRoleplayResponse(aiConfig, context, [...filteredConversation, dmMessageForAI]);
+        
+        if (aiResponse) {
+          const newMessages = buildAssistantMessages(aiResponse).map(msg => ({
+            ...msg,
+            isDirectMessage: true,
+            visibleTo: [playingAsChar?.name || 'Player', targetCharName].filter(Boolean),
+          }));
+          
+          setMessages(prev => [...prev, userMessage, ...newMessages]);
+          await syncSceneState(context, [...filteredConversation, dmMessageForAI, ...newMessages]);
+          setContext(prev => acknowledgeSceneContextChanges(prev));
+        }
+      } else {
+        const conversation = [...filteredConversation, userMessage];
+        aiResponse = await generateRoleplayResponse(aiConfig, context, conversation);
+        
+        if (aiResponse) {
+          const newMessages = buildAssistantMessages(aiResponse);
+          
+          setMessages(prev => [...prev, userMessage, ...newMessages]);
+          await syncSceneState(context, [...conversation, ...newMessages]);
+          setContext(prev => acknowledgeSceneContextChanges(prev));
+        }
       }
     } catch (error: any) {
       console.error('Error generating response:', error);
@@ -1971,10 +2040,10 @@ user is playing role of john and is trying to find a way to have a relationship 
             </div>
           </header>
 
-          {/* Active characters indicator */}
-          <div className="px-6 py-2 border-b border-white/10 bg-[#0a0a0a]/80">
-            <span className="text-[10px] uppercase tracking-widest text-zinc-500">Present (Click to Toggle Persona):</span>
-            <div className="inline-flex flex-wrap gap-2 ml-2">
+          {/* Active characters indicator - compact badges */}
+          <div className="px-4 py-2 border-b border-white/5 bg-[#0a0a0a]/50 flex items-center gap-2 overflow-x-auto">
+            <span className="text-[9px] uppercase tracking-widest text-zinc-600 shrink-0">Cast:</span>
+            <div className="flex items-center gap-1.5">
               {(() => {
                 const presentChars = context.characters.filter(c => c.isPresent);
                 const isPrivate = presentChars.length === 2;
@@ -2055,37 +2124,50 @@ user is playing role of john and is trying to find a way to have a relationship 
                 );
               })()}
             </div>
-            {context.characters.length > 0 && context.characters.every(c => !c.isPresent) && (
-              <span className="mt-2 block text-xs text-zinc-500">No one is currently present</span>
-            )}
+          </div>
 
-            {(context.playerProfile?.name || context.playerProfile?.role || context.playerProfile?.playingAsCharacterId) && (
-              <div className="mt-2 text-[10px] uppercase tracking-widest text-zinc-500">
-                You are:
-                <span className="ml-2 text-emerald-400 font-bold normal-case tracking-normal text-xs">
-                  {context.playerProfile?.playingAsCharacterId 
-                    ? `Playing as ${context.characters.find(c => c.id === context.playerProfile?.playingAsCharacterId)?.name}`
-                    : (context.playerProfile?.name || 'Unnamed Player') + (context.playerProfile?.role ? ` — ${context.playerProfile.role}` : '')
-                  }
-                </span>
-              </div>
-            )}
-            <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-widest text-zinc-500">
-              <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
-                <ShieldAlert className="w-3 h-3 text-emerald-500" />
-                {(context.contentSafety?.explicitMode || 'fade-to-black') === 'fade-to-black' ? 'Fade to black' : 'Explicit allowed'}
+          {/* Scene Settings Bar */}
+          <div className="px-4 py-3 border-b border-white/5 bg-[#0a0a0a]/30 flex items-center gap-4 overflow-x-auto">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <MapPin className="w-3 h-3 text-emerald-400" />
+              <span className="text-[10px] font-medium text-zinc-400 truncate max-w-[120px]">
+                {context.location || 'No location'}
               </span>
-              {(context.contentSafety?.blurExplicitContent ?? true) && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
-                  <EyeOff className="w-3 h-3 text-emerald-500" /> Blur explicit
-                </span>
-              )}
             </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Clock className="w-3 h-3 text-amber-400" />
+              <span className="text-[10px] font-medium text-zinc-400 truncate max-w-[100px]">
+                {context.sceneTime || 'No time'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Sparkles className="w-3 h-3 text-violet-400" />
+              <span className="text-[10px] font-medium text-zinc-400 truncate max-w-[100px]">
+                {context.theme || 'No theme'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <BookOpen className="w-3 h-3 text-blue-400" />
+              <span className="text-[10px] font-medium text-zinc-500 truncate max-w-[200px]">
+                {context.plot ? context.plot.slice(0, 50) + (context.plot.length > 50 ? '...' : '') : 'No plot'}
+              </span>
+            </div>
+            <button
+              onClick={() => {
+                if (isRightSidebarCollapsed) {
+                  setIsRightSidebarCollapsed(false);
+                }
+                setActiveRightTab('scene');
+              }}
+              className="ml-auto shrink-0 text-[9px] uppercase tracking-wider text-zinc-600 hover:text-emerald-400 transition-colors"
+            >
+              Edit →
+            </button>
           </div>
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-6 py-8 custom-scrollbar">
-            <div className="max-w-3xl mx-auto space-y-8">
+            <div className="max-w-2xl mx-auto space-y-6">
               <div className="space-y-4 p-4 bg-white/[0.03] border border-emerald-500/10 rounded-2xl">
                 <div className="flex items-center gap-2">
                   <div className="p-1.5 bg-emerald-500/10 rounded-lg">
@@ -2102,48 +2184,19 @@ user is playing role of john and is trying to find a way to have a relationship 
                   <textarea
                     value={storyPrompt}
                     onChange={(e) => setStoryPrompt(e.target.value)}
-                    className="w-full h-36 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-emerald-500/50 transition-colors resize-none pr-24"
+                    className="w-full h-28 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-emerald-500/50 transition-colors resize-none"
                     placeholder="Describe genre, tone, setting, your role, desired cast dynamics, pacing, content boundaries, and any important hooks..."
                   />
-                  <label className="absolute right-3 top-3 cursor-pointer inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs font-medium text-zinc-400 hover:bg-white/10 hover:text-zinc-300 transition-colors">
-                    <FileUp className="w-3.5 h-3.5" />
-                    Upload
-                    <input
-                      type="file"
-                      accept=".txt,.md,.markdown"
-                      className="hidden"
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        try {
-                          const text = await file.text();
-                          setStoryPrompt(prev => prev ? `${prev}\n\n${text}` : text);
-                        } catch (err) {
-                          console.error('Failed to read file:', err);
-                        }
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
                 </div>
 
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleQuickStoryGeneration}
                     disabled={!storyPrompt.trim() || isGeneratingStorySetup}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500 text-white text-xs font-bold uppercase tracking-widest hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500 text-white text-xs font-bold uppercase tracking-widest hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                   >
                     {isGeneratingStorySetup ? <Loader2 className="w-4 h-4 animate-spin" /> : <WandSparkles className="w-4 h-4" />}
-                    {isGeneratingStorySetup ? 'Generating...' : 'Generate Full Story Setup'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveLastStory}
-                    disabled={!lastGeneratedStory}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-500 text-white text-xs font-bold uppercase tracking-widest hover:bg-blue-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                  >
-                    <Save className="w-4 h-4" />
-                    Save Story
+                    {isGeneratingStorySetup ? 'Generating...' : 'Generate'}
                   </button>
                   {storyPrompt && (
                     <button
@@ -2158,13 +2211,25 @@ user is playing role of john and is trying to find a way to have a relationship 
 
               <AnimatePresence initial={false}>
                 {(() => {
+                  const playerCharId = context.playerProfile?.playingAsCharacterId;
+                  const playerChar = playerCharId ? context.characters.find(c => c.id === playerCharId) : null;
+                  const playerName = playerChar?.name || 'Player';
+                  
+                  const isMessageVisibleToPlayer = (msg: Message) => {
+                    if (msg.isHidden) return false;
+                    if (!msg.visibleTo) return true;
+                    return msg.visibleTo.includes(playerName);
+                  };
+                  
+                  const visibleMessages = messages.filter(isMessageVisibleToPlayer);
+
                   const items: (Message | { type: 'event', event: any, id: string, timestamp: number })[] = [
-                    ...messages.filter(m => !m.isHidden),
+                    ...visibleMessages,
                     ...(context.structuredEvents || []).map((e: any, i: number) => ({
                       type: 'event' as const,
                       event: e,
                       id: `event-${i}`,
-                      timestamp: messages[0]?.timestamp || Date.now() // Events don't have timestamps, use fallback
+                      timestamp: messages[0]?.timestamp || Date.now()
                     }))
                   ].sort((a, b) => a.timestamp - b.timestamp);
 
@@ -2175,32 +2240,22 @@ user is playing role of john and is trying to find a way to have a relationship 
                       return (
                         <motion.div
                           key={item.id}
-                          initial={{ opacity: 0, x: -20 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          className="my-3 flex flex-col items-center justify-center relative group"
+                          initial={{ opacity: 0, y: 5 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="my-2 flex items-center justify-center relative opacity-60 hover:opacity-100 transition-opacity"
                         >
-                          <div className="absolute left-0 right-0 top-1/2 h-px bg-gradient-to-r from-transparent via-emerald-500/10 to-transparent group-hover:via-emerald-500/30 transition-all" />
-                          <button
-                            onClick={() => setCollapsedEvents(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
-                            className="relative z-10 px-4 py-1.5 rounded-2xl bg-[#0a0a0a] border border-emerald-500/10 hover:border-emerald-500/40 shadow-sm flex items-center gap-3 transition-all max-w-[80%]"
-                          >
-                            <div className="flex items-center gap-2 flex-shrink-0">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                              <span className="text-[9px] font-black text-emerald-400 uppercase tracking-[0.2em]">
-                                {event.type || 'Scene Event'}
+                          <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/5 hover:border-white/10 transition-colors cursor-pointer" onClick={() => setCollapsedEvents(prev => ({ ...prev, [item.id]: !prev[item.id] }))}>
+                            <span className="w-1 h-1 rounded-full bg-zinc-500" />
+                            <span className="text-[9px] font-medium text-zinc-500 uppercase tracking-wider">
+                              {event.type || 'Event'}
+                            </span>
+                            {!isCollapsed && event.description && (
+                              <span className="text-[9px] text-zinc-600 max-w-[200px] truncate">
+                                {event.description.slice(0, 40)}{event.description.length > 40 ? '...' : ''}
                               </span>
-                            </div>
-                            
-                            {!isCollapsed ? (
-                              <span className="text-[11px] text-zinc-300 font-medium truncate">
-                                {event.description}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] text-zinc-500 italic">Event details collapsed...</span>
                             )}
-                            
-                            <ChevronDown className={cn("w-3 h-3 text-zinc-600 transition-transform flex-shrink-0", isCollapsed && "-rotate-90")} />
-                          </button>
+                            <ChevronDown className={cn("w-2.5 h-2.5 text-zinc-600 transition-transform", isCollapsed && "-rotate-90")} />
+                          </div>
                         </motion.div>
                       );
                     }
@@ -2220,7 +2275,7 @@ user is playing role of john and is trying to find a way to have a relationship 
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         className={cn(
-                          "flex flex-col gap-1.5",
+                          "group flex flex-col gap-1.5",
                           isPersonaUser ? "items-end text-right" : "items-start"
                         )}
                       >
@@ -2230,16 +2285,16 @@ user is playing role of john and is trying to find a way to have a relationship 
                         )}>
                           {(msg.characterName || (isPersonaUser && !playingAsChar)) && (
                             <span className={cn(
-                              "text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5",
-                              isPersonaUser ? "text-emerald-400" : "text-zinc-500"
+                              "text-[9px] font-medium tracking-wide flex items-center gap-1",
+                              isPersonaUser ? "text-emerald-400/80" : "text-zinc-600"
                             )}>
-                              {isPersonaUser && <User className="w-2.5 h-2.5 opacity-60" />}
+                              {isPersonaUser && playingAsChar && <User className="w-2.5 h-2.5" />}
                               {msg.characterName || 'You'}
                             </span>
                           )}
                           {shouldShowExplicitBadge(msg, context) && (
-                            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-300">
-                              Explicit
+                            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-medium uppercase tracking-wider text-amber-300">
+                              18+
                             </span>
                           )}
                         </div>
@@ -2273,10 +2328,10 @@ user is playing role of john and is trying to find a way to have a relationship 
                           </div>
                           {msg.actionText && (
                             <div className={cn(
-                              "flex-1 max-w-[45%] px-4 py-3 rounded-2xl text-sm leading-relaxed border italic",
+                              "flex-1 max-w-[40%] px-3 py-2 rounded-xl text-xs italic border",
                               isPersonaUser 
-                                ? "bg-emerald-900/20 border-emerald-500/30 text-emerald-200 rounded-tl-none"
-                                : "bg-amber-900/10 border-amber-500/20 text-amber-200/80 rounded-tr-none"
+                                ? "bg-emerald-900/10 border-emerald-500/20 text-emerald-300/70"
+                                : "bg-white/5 border-white/5 text-zinc-500"
                             )}>
                               <Markdown>{msg.actionText}</Markdown>
                             </div>
@@ -2334,58 +2389,67 @@ user is playing role of john and is trying to find a way to have a relationship 
                           </div>
                         )}
 
-                        {!isPersonaUser && msg.role === 'assistant' && !isSceneBubble && (
-                          <div className="flex max-w-[85%] flex-col items-start gap-2 px-1">
-                            <button
-                              type="button"
-                              onClick={() => setOpenBubbleActionsFor((current) => current === msg.id ? null : msg.id)}
-                              className={cn(
-                                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-widest transition-all",
-                                openBubbleActionsFor === msg.id
-                                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                                  : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:text-zinc-200"
-                              )}
-                            >
-                              <Sparkles className="w-3 h-3" />
-                              Actions
-                              <ChevronDown className={cn("w-3 h-3 transition-transform", openBubbleActionsFor === msg.id && "rotate-180")} />
-                            </button>
+                        <div className="flex items-center justify-between gap-4 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {!isPersonaUser && msg.role === 'assistant' && !isSceneBubble && (
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (openBubbleActionsFor !== msg.id) {
+                                    loadDynamicSuggestions(msg);
+                                  }
+                                  setOpenBubbleActionsFor((current) => current === msg.id ? null : msg.id);
+                                }}
+                                className={cn(
+                                  "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest transition-all",
+                                  openBubbleActionsFor === msg.id
+                                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                                    : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:text-zinc-200"
+                                )}
+                              >
+                                {isLoadingSuggestions ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3 h-3" />
+                                )}
+                                Actions
+                              </button>
 
-                            {openBubbleActionsFor === msg.id && (
-                              <div className="flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-black/20 p-2">
-                                {buildBubbleActions(msg).map((action) => {
-                                  const ActionIcon = action.icon;
-                                  return (
-                                    <button
-                                      key={action.id}
-                                      type="button"
-                                      onClick={() => handleBubbleAction(action.prompt)}
-                                      disabled={isLoading}
-                                      className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-200 transition-all hover:border-emerald-500/30 hover:bg-emerald-500/10 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
-                                      title={action.prompt}
-                                    >
-                                      <ActionIcon className="w-3 h-3" />
-                                      {action.label}
-                                    </button>
-                                  );
-                                })}
-                                <div className="w-px h-6 bg-white/10 mx-1 self-center" />
-                                <button
-                                  type="button"
-                                  onClick={() => removeMessage(msg.id)}
-                                  className="inline-flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-red-400 transition-all hover:bg-red-500/20 shadow-lg shadow-red-500/5 group/reject"
-                                  title="Delete this message (Reject response)"
-                                >
-                                  <Trash2 className="w-3 h-3 group-hover/reject:scale-110 transition-transform" />
-                                  Reject
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        <span className="text-[10px] text-zinc-600 px-1">
-                          {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
+                              {openBubbleActionsFor === msg.id && (
+                                <div className="flex flex-wrap gap-1.5 rounded-2xl border border-white/10 bg-black/40 backdrop-blur-sm p-2">
+                                  {buildBubbleActions(msg).map((action) => {
+                                    const ActionIcon = action.icon;
+                                    return (
+                                      <button
+                                        key={action.id}
+                                        type="button"
+                                        onClick={() => handleBubbleAction(action.prompt)}
+                                        disabled={isLoading}
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-200 transition-all hover:border-emerald-500/30 hover:bg-emerald-500/10 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                                        title={action.prompt}
+                                      >
+                                        <ActionIcon className="w-3 h-3" />
+                                        {action.label}
+                                      </button>
+                                    );
+                                  })}
+                                  <div className="w-px h-5 bg-white/10 mx-1 self-center" />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeMessage(msg.id)}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/20 bg-red-500/10 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-red-400 transition-all hover:bg-red-500/20"
+                                    title="Delete this message"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <span className="text-[10px] text-zinc-600">
+                            {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
                       </motion.div>
                     );
                   });
@@ -2412,23 +2476,8 @@ user is playing role of john and is trying to find a way to have a relationship 
 
           {/* Input */}
           <div className="p-6 bg-gradient-to-t from-[#0a0a0a] to-transparent">
-            {/* conversation mode & instructor switch */}
+            {/* instructor switch */}
             <div className="max-w-3xl mx-auto mb-3 flex justify-center gap-2">
-              {(['presence','tele'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => initializeSceneForModeChange(mode)}
-                  className={cn(
-                    "px-3 py-1 rounded-full text-xs font-medium transition",
-                    context.conversationMode === mode
-                      ? "bg-emerald-500/20 text-emerald-400"
-                      : "bg-black/20 text-zinc-500 hover:bg-black/25"
-                  )}
-                >
-                  {mode === 'tele' ? 'Telechat' : 'In person'}
-                </button>
-              ))}
               <button
                 type="button"
                 onClick={() => setIsInstructorMode(prev => !prev)}
@@ -2450,7 +2499,7 @@ user is playing role of john and is trying to find a way to have a relationship 
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
-                placeholder="What do you do or say?"
+                placeholder="Type @character_name to whisper privately..."
                 className="w-full bg-zinc-700 border border-white/20 rounded-2xl pl-6 pr-14 py-4 focus:outline-none focus:border-emerald-400 transition-all text-zinc-200 placeholder:text-zinc-500 shadow-2xl"
               />
               <button 
@@ -2541,6 +2590,9 @@ user is playing role of john and is trying to find a way to have a relationship 
                 removeCharacter={removeCharacter}
                 setIsWizardOpen={setIsWizardOpen}
                 onEditCharacter={handleEditCharacter}
+                messages={messages}
+                aiConfig={aiConfig}
+                notify={notify}
               />
             )}
 
@@ -2551,7 +2603,8 @@ user is playing role of john and is trying to find a way to have a relationship 
                   if (await confirm('Load Story', `Load story "${story.name}"? This will reset the chat.`)) {
                     setMessages([]);
                     setRevealedExplicitMessages({});
-                    setContext(syncSceneContextTracking(story.context));
+                    const nextContext = syncSceneContextTracking(normalizeGeneratedContext(story.context));
+                    setContext(nextContext);
                     notify(`Loaded story: ${story.name}`, 'success');
                   }
                 }}

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Play, Pause, RotateCcw, MapPin, Activity, Check, Lightbulb, Eye, Brain, Workflow, Loader2, ChevronDown, ChevronRight, Zap, Clock, Sparkles, BookOpen, Target, TrendingUp, MessageSquare, AlertCircle } from 'lucide-react';
+import { Play, Pause, RotateCcw, MapPin, Activity, Check, Lightbulb, Eye, Brain, Workflow, Loader2, ChevronDown, ChevronRight, Zap, Clock, Sparkles, BookOpen, Target, TrendingUp, MessageSquare, AlertCircle, Users, Lock, Heart, Eye as EyeIcon, MemoryStick } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { SceneContext, Message, AIConfig, StoryMemoryEntry, MemoryEntryType } from '../types';
+import { SceneContext, Message, AIConfig, StoryMemoryEntry, MemoryEntryType, CharacterAgent } from '../types';
 import { createMemoryEntry, getActiveMemoryEntries, addMemoryEntry } from '../lib/memory';
 import { generateLocationSuggestions, generateContextUpdate, updateSceneState } from '../services/geminiService';
+import { buildCharacterAgentDigest, getAgentSummary, getEmotionalTrend, syncAllAgentsFromStory, createAgentState } from '../lib/characterAgent';
 
 // Agent result types
 export interface AgentResult {
@@ -71,6 +72,7 @@ interface AgentsPageProps {
   onApplyContextUpdate?: (updates: Partial<SceneContext>) => void;
   onApplySceneUpdate?: (summary: string, events: string[]) => void;
   onApplyMemory?: (entry: StoryMemoryEntry) => void;
+  onUpdateCharacterAgents?: (agents: CharacterAgent[]) => void;
 }
 
 // Job descriptions for each agent
@@ -92,10 +94,16 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
   onApplyContextUpdate,
   onApplySceneUpdate,
   onApplyMemory,
+  onUpdateCharacterAgents,
 }) => {
   const [isOrchestratorActive, setIsOrchestratorActive] = useState(true);
   const [orchestratorStatus, setOrchestratorStatus] = useState<'idle' | 'analyzing' | 'orchestrating'>('idle');
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
+  const [selectedCharacterAgent, setSelectedCharacterAgent] = useState<string | null>(null);
+
+  const [characterAgents, setCharacterAgents] = useState<Record<string, CharacterAgent>>(() => 
+    context.characterAgents?.reduce((acc, agent) => ({ ...acc, [agent.characterId]: agent }), {}) || {}
+  );
 
   const [agents, setAgents] = useState<Agent[]>([
     {
@@ -856,6 +864,150 @@ export const AgentsPage: React.FC<AgentsPageProps> = ({
             )}
           </div>
         ))}
+      </div>
+
+      {/* Character Agents Section */}
+      <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mt-6">
+        Character Knowledge Agents ({context.characters?.length || 0})
+      </div>
+
+      <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-3">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-violet-400" />
+            <span className="text-sm font-medium text-zinc-200">Character Agents</span>
+          </div>
+          <button
+            onClick={() => {
+              const updated = syncAllAgentsFromStory(
+                characterAgents,
+                context.characters || [],
+                context.storyMemory || { entries: [] },
+                context.storyRevelations || { beats: [], characterKnowledge: [] },
+                context.relationships || []
+              );
+              setCharacterAgents(updated);
+              onUpdateCharacterAgents?.(Object.values(updated));
+              notify?.('Character agents synced with story memory', 'success');
+            }}
+            className="px-2 py-1 rounded-lg text-[10px] font-medium bg-violet-500/20 text-violet-400"
+          >
+            Sync
+          </button>
+        </div>
+
+        <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
+          {context.characters?.map((char) => {
+            const agent = characterAgents[char.id];
+            const hasKnowledge = agent && (
+              agent.knownFacts.length > 0 || 
+              agent.secretsKnown.length > 0 || 
+              agent.relationships.length > 0
+            );
+            
+            return (
+              <div
+                key={char.id}
+                className={cn(
+                  "rounded-lg border p-2 cursor-pointer transition-all",
+                  selectedCharacterAgent === char.id 
+                    ? "border-violet-500/50 bg-violet-500/10" 
+                    : "border-white/10 bg-white/[0.02] hover:border-white/20"
+                )}
+                onClick={() => setSelectedCharacterAgent(selectedCharacterAgent === char.id ? null : char.id)}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-500/30 to-fuchsia-500/30 flex items-center justify-center text-[10px] font-bold text-violet-300">
+                      {char.name?.charAt(0).toUpperCase() || '?'}
+                    </div>
+                    <div>
+                      <div className="text-xs text-zinc-200">{char.name}</div>
+                      {agent && (
+                        <div className="text-[9px] text-zinc-500">
+                          Knowledge: {agent.knowledgeLevel.knowledgeScore} | Secrets: {agent.secretsKnown.length} | Rels: {agent.relationships.length}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {!hasKnowledge && <span className="text-[9px] text-zinc-600">No data</span>}
+                  {hasKnowledge && (
+                    <div className="flex items-center gap-1">
+                      {agent.secretsKnown.length > 0 && <Lock className="w-3 h-3 text-amber-400" />}
+                      {agent.relationships.length > 0 && <Users className="w-3 h-3 text-blue-400" />}
+                      {agent.emotionalMemory.length > 0 && <Heart className="w-3 h-3 text-rose-400" />}
+                    </div>
+                  )}
+                </div>
+
+                {selectedCharacterAgent === char.id && agent && (
+                  <div className="mt-2 pt-2 border-t border-white/10 space-y-2">
+                    {agent.knownFacts.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-1 text-[9px] text-zinc-500 mb-1">
+                          <Brain className="w-3 h-3" /> Known Facts ({agent.knownFacts.length})
+                        </div>
+                        <div className="text-[9px] text-zinc-400 space-y-0.5">
+                          {agent.knownFacts.slice(-3).map((fact, i) => (
+                            <div key={i} className="truncate">• {fact.slice(0, 60)}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {agent.secretsKnown.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-1 text-[9px] text-amber-500 mb-1">
+                          <Lock className="w-3 h-3" /> Secrets Known ({agent.secretsKnown.length})
+                        </div>
+                        <div className="text-[9px] text-zinc-400 space-y-0.5">
+                          {agent.secretsKnown.slice(-2).map((secret, i) => (
+                            <div key={i} className="truncate">• {secret.content.slice(0, 50)}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {agent.relationships.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-1 text-[9px] text-blue-500 mb-1">
+                          <Users className="w-3 h-3" /> Observed Relationships ({agent.relationships.length})
+                        </div>
+                        <div className="text-[9px] text-zinc-400 space-y-0.5">
+                          {agent.relationships.slice(-3).map((rel, i) => {
+                            const targetChar = context.characters?.find(c => c.id === rel.targetCharacterId);
+                            return (
+                              <div key={i} className="truncate">
+                                • {targetChar?.name || 'Unknown'}: {rel.kind} {rel.isDirectlyObserved ? '(direct)' : '(observed)'}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {agent.emotionalMemory.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-1 text-[9px] text-rose-500 mb-1">
+                          <Heart className="w-3 h-3" /> Emotional Memory
+                        </div>
+                        <div className="flex items-center gap-1 text-[9px] text-zinc-400">
+                          {getEmotionalTrend(agent).map((emotion, i) => (
+                            <span key={i} className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400">{emotion}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="text-[8px] text-zinc-600">
+                      Last sync: {new Date(agent.lastSyncTimestamp).toLocaleTimeString()}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
